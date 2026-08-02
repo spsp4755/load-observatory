@@ -41,3 +41,10 @@ type RunResult struct {
 	P95Millis     int64 `json:"p95_millis"`
 	TTFTP95Millis int64 `json:"ttft_p95_millis"`
 }
+
+type Run struct {
+	ID     string    `json:"id"`
+	Status string    `json:"status"`
+	Config RunConfig `json:"config"`
+	Result RunResult `json:"result"`
+}
