@@ -1,1 +1,46 @@
-# load-observatory
+# Load Observatory
+
+폐쇄망 Kubernetes에서 OpenAI 호환 모델 API와 내부 웹/API의 부하를 측정하는 MVP입니다.
+
+## 현재 제공 기능
+
+- 내부 IP 또는 `.internal` 도메인 대상만 등록
+- VU(최대 500) 또는 RPS(최대 2,000) 실행, 최대 60분
+- HTTP 성공/실패, P95 전체 지연, P95 TTFT 수집
+- React 실행 화면과 Agent 폴링 실행
+
+## 로컬 실행
+
+```powershell
+go run ./cmd/controller
+go run ./cmd/agent
+cd web; npm.cmd install; npm.cmd run dev
+```
+
+브라우저에서 Vite URL을 열고 사설 IP 또는 `.internal` URL을 입력합니다.
+
+## 폐쇄망 반입
+
+인터넷 연결 환경에서 각 이미지를 `linux/amd64`로 만들고 저장합니다.
+
+```powershell
+podman build --platform linux/amd64 -f deploy/Dockerfile.controller -t load-observatory/controller:latest .
+podman build --platform linux/amd64 -f deploy/Dockerfile.agent -t load-observatory/agent:latest .
+podman build --platform linux/amd64 -f deploy/Dockerfile.web -t load-observatory/web:latest .
+podman save -o controller.tar load-observatory/controller:latest
+podman save -o agent.tar load-observatory/agent:latest
+podman save -o web.tar load-observatory/web:latest
+```
+
+폐쇄망 노드에서 내부 레지스트리에 올리고 배포합니다.
+
+```powershell
+.\deploy\load-images.ps1 -ArchiveDirectory C:\images -Registry registry.internal:5000
+kubectl apply -f deploy/k8s.yaml
+```
+
+`deploy/k8s.yaml`의 세 이미지 이름을 내부 레지스트리 주소로 바꾼 후 적용합니다.
+
+## 알려진 MVP 범위
+
+결과 저장소는 현재 Controller 메모리입니다. Pod 재시작 후 결과 보존과 Prometheus/DCGM GPU 지표는 다음 단계에서 PostgreSQL·Prometheus 연동으로 추가합니다.

@@ -26,3 +26,22 @@ func TestCreateRunReturnsQueuedRun(t *testing.T) {
 		t.Fatalf("expected queued run, got %s", got)
 	}
 }
+
+func TestAgentClaimAndResultCompleteRun(t *testing.T) {
+	memory := store.NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
+	run := memory.CreateRun(core.RunConfig{TargetID: target.ID, Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1})
+	server := NewServer(memory)
+
+	claim := httptest.NewRecorder()
+	server.ServeHTTP(claim, httptest.NewRequest(http.MethodPost, "/api/agent/claim", nil))
+	if claim.Code != http.StatusOK || !bytes.Contains(claim.Body.Bytes(), []byte(`"id":"`+run.ID+`"`)) {
+		t.Fatalf("unexpected claim: %d %s", claim.Code, claim.Body.String())
+	}
+
+	result := httptest.NewRecorder()
+	server.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/agent/runs/"+run.ID+"/result", bytes.NewBufferString(`{"successes":1}`)))
+	if result.Code != http.StatusOK || !bytes.Contains(result.Body.Bytes(), []byte(`"status":"completed"`)) {
+		t.Fatalf("unexpected result: %d %s", result.Code, result.Body.String())
+	}
+}

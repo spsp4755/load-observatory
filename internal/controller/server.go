@@ -19,11 +19,33 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.createTarget(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/runs":
 		s.createRun(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/claim":
+		s.claimRun(w)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/result"):
+		s.completeRun(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/runs/"):
 		s.getRun(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) claimRun(w http.ResponseWriter) {
+	assignment, ok := s.store.ClaimRun()
+	if !ok { w.WriteHeader(http.StatusNoContent); return }
+	writeJSON(w, http.StatusOK, assignment)
+}
+
+func (s *Server) completeRun(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/agent/runs/"), "/result")
+	var result core.RunResult
+	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	run, ok := s.store.CompleteRun(id, result)
+	if !ok { http.NotFound(w, r); return }
+	writeJSON(w, http.StatusOK, run)
 }
 
 func (s *Server) createTarget(w http.ResponseWriter, r *http.Request) {

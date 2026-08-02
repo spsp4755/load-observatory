@@ -49,3 +49,28 @@ func (s *MemoryStore) GetRun(id string) (core.Run, bool) {
 	run, ok := s.runs[id]
 	return run, ok
 }
+
+func (s *MemoryStore) ClaimRun() (core.Assignment, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, run := range s.runs {
+		if run.Status != "queued" { continue }
+		target, ok := s.targets[run.Config.TargetID]
+		if !ok { continue }
+		run.Status = "running"
+		s.runs[id] = run
+		return core.Assignment{Run: run, Target: target}, true
+	}
+	return core.Assignment{}, false
+}
+
+func (s *MemoryStore) CompleteRun(id string, result core.RunResult) (core.Run, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok { return core.Run{}, false }
+	run.Status = "completed"
+	run.Result = result
+	s.runs[id] = run
+	return run, true
+}

@@ -48,3 +48,8 @@ type Run struct {
 	Config RunConfig `json:"config"`
 	Result RunResult `json:"result"`
 }
+
+type Assignment struct {
+	Run    Run    `json:"run"`
+	Target Target `json:"target"`
+}
