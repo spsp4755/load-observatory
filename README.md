@@ -34,6 +34,14 @@ podman build --platform linux/amd64 -f deploy/Dockerfile.web -t load-observatory
 podman save -o controller.tar load-observatory/controller:latest
 podman save -o agent.tar load-observatory/agent:latest
 podman save -o web.tar load-observatory/web:latest
+podman pull postgres:16
+podman pull prom/prometheus:v2.54.1
+podman pull nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04
+podman pull prom/node-exporter:v1.8.2
+podman save -o postgres-16.tar postgres:16
+podman save -o prometheus.tar prom/prometheus:v2.54.1
+podman save -o dcgm-exporter.tar nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04
+podman save -o node-exporter.tar prom/node-exporter:v1.8.2
 ```
 
 폐쇄망 노드에서 내부 레지스트리에 올리고 배포합니다.
@@ -42,6 +50,8 @@ podman save -o web.tar load-observatory/web:latest
 .\deploy\load-images.ps1 -ArchiveDirectory C:\images -Registry registry.internal:5000
 kubectl apply -f deploy/k8s.yaml
 ```
+
+`load-images.ps1` also publishes PostgreSQL, Prometheus, DCGM Exporter, and Node Exporter as `load-observatory/*` images. Before applying, replace every manifest image with the matching `$Registry/load-observatory/*` destination printed by the script; this prevents Kubernetes from attempting an internet pull.
 
 `deploy/k8s.yaml`의 세 이미지 이름을 내부 레지스트리 주소로 바꾼 후 적용합니다.
 
