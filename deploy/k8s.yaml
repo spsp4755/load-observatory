@@ -4,6 +4,51 @@ metadata:
   name: load-observatory
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: load-observatory
+type: Opaque
+stringData:
+  POSTGRES_DB: load_observatory
+  POSTGRES_USER: load_observatory
+  POSTGRES_PASSWORD: change-this-before-deploying
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: load-observatory
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: load-observatory
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          envFrom: [{ secretRef: { name: postgres-credentials } }]
+          ports: [{ containerPort: 5432 }]
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: controller
@@ -27,7 +72,9 @@ spec:
         - name: controller
           image: load-observatory/controller:latest
           imagePullPolicy: IfNotPresent
-          env: [{ name: LISTEN_ADDR, value: ":8080" }]
+          env:
+            - { name: LISTEN_ADDR, value: ":8080" }
+            - { name: DATABASE_URL, value: "postgres://load_observatory:change-this-before-deploying@postgres:5432/load_observatory?sslmode=disable" }
           ports: [{ containerPort: 8080 }]
 ---
 apiVersion: apps/v1
