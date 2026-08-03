@@ -396,6 +396,7 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		}
 	}
 	merged := core.RunResult{StatusCounts: map[string]int64{}}
+	var latencyWeight, ttftWeight int64
 	for shardID, item := range s.shards {
 		if item.RunID != run.ID {
 			continue
@@ -409,11 +410,11 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.Tokens.Reasoning += value.Tokens.Reasoning
 		merged.Timeline = append(merged.Timeline, value.Timeline...)
 		merged.Errors = append(merged.Errors, value.Errors...)
-		if value.Latency.P95Millis > merged.Latency.P95Millis {
-			merged.Latency.P95Millis = value.Latency.P95Millis
-		}
-		if value.TTFT.P95Millis > merged.TTFT.P95Millis {
-			merged.TTFT.P95Millis = value.TTFT.P95Millis
+		if value.Successes > 0 {
+			merged.Latency = mergeDistribution(merged.Latency, value.Latency, latencyWeight, value.Successes)
+			merged.TTFT = mergeDistribution(merged.TTFT, value.TTFT, ttftWeight, value.Successes)
+			latencyWeight += value.Successes
+			ttftWeight += value.Successes
 		}
 		for code, count := range value.StatusCounts {
 			merged.StatusCounts[code] += count
@@ -431,6 +432,33 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 	run.Result = merged
 	s.runs[run.ID] = run
 	return run, true
+}
+
+func mergeDistribution(current, next core.Distribution, currentWeight, nextWeight int64) core.Distribution {
+	if currentWeight == 0 {
+		return next
+	}
+	return core.Distribution{
+		MinMillis: min(current.MinMillis, next.MinMillis),
+		AvgMillis: (current.AvgMillis*currentWeight + next.AvgMillis*nextWeight) / (currentWeight + nextWeight),
+		P50Millis: max(current.P50Millis, next.P50Millis),
+		P95Millis: max(current.P95Millis, next.P95Millis),
+		P99Millis: max(current.P99Millis, next.P99Millis),
+		MaxMillis: max(current.MaxMillis, next.MaxMillis),
+	}
+}
+
+func min(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
+}
+func max(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (s *MemoryStore) AddMonitoring(id string, sample core.MonitoringSample) {
