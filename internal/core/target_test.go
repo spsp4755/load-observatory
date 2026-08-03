@@ -34,3 +34,10 @@ func TestValidateRunConfigAcceptsOneMillionModelTokens(t *testing.T) {
 		t.Fatalf("one million tokens rejected: %v", err)
 	}
 }
+
+func TestValidateRunConfigRejectsUnknownCachePolicy(t *testing.T) {
+	err := ValidateRunConfig(RunConfig{Mode: LoadModeVU, VUs: 1, DurationSeconds: 1, MaxTokens: 1, CachePolicy: "unknown"})
+	if err == nil {
+		t.Fatal("unknown cache policy accepted")
+	}
+}

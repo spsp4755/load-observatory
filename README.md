@@ -1,5 +1,9 @@
 # Load Observatory
 
+## Cache-aware distributed workload
+
+Each Agent claims a distinct queued run, so scale the existing Agent Deployment replicas to distribute independent load-test runs. Within one run, choose `mixed` (default: 30% varied requests), `reuse` (repeat the same request), or `bypass` (vary every request). Variation adds only Load Observatory nonce data to the requests it creates: a model prompt suffix or web query parameters. It never clears a target cache or cancels traffic from any other service.
+
 폐쇄망 Kubernetes에서 OpenAI 호환 모델 API와 내부 웹/API의 부하를 측정하는 MVP입니다.
 
 ## 현재 제공 기능

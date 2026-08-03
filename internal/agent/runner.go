@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spsp4755/load-observatory/internal/core"
@@ -26,6 +27,7 @@ type measurements struct {
 	errors       []string
 	tokens       core.TokenUsage
 	timeline     map[int64]*timelineMeasurement
+	sequence     atomic.Int64
 }
 
 type timelineMeasurement struct {
@@ -81,9 +83,22 @@ func runWorker(ctx context.Context, client *http.Client, target core.Target, con
 
 func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
 	started := time.Now()
+	sequence, varied := m.nextVariation(config)
 	method, body := http.MethodGet, io.Reader(nil)
+	requestURL := target.URL
+	if varied && target.Type == core.TargetTypeWeb {
+		separator := "?"
+		if strings.Contains(requestURL, "?") {
+			separator = "&"
+		}
+		requestURL += fmt.Sprintf("%s__lo_run=%s&__lo_request=%d", separator, config.WorkloadID, sequence)
+	}
 	if target.Type == core.TargetTypeModel || strings.HasSuffix(target.URL, "/v1/chat/completions") {
 		method = http.MethodPost
+		prompt := config.Prompt
+		if varied {
+			prompt += fmt.Sprintf("\n\n[Load Observatory variation run=%s request=%d]", config.WorkloadID, sequence)
+		}
 		payload, err := json.Marshal(struct {
 			Model    string `json:"model"`
 			Messages []struct {
@@ -94,14 +109,14 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		}{Model: target.Model, Messages: []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
-		}{{Role: "user", Content: config.Prompt}}, MaxTokens: config.MaxTokens})
+		}{{Role: "user", Content: prompt}}, MaxTokens: config.MaxTokens})
 		if err != nil {
 			m.recordFailure(time.Since(started).Milliseconds(), "encode request")
 			return
 		}
 		body = bytes.NewReader(payload)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, target.URL, body)
+	request, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		m.recordFailure(time.Since(started).Milliseconds(), "create request")
 		return
@@ -143,6 +158,25 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		return
 	}
 	m.recordSuccess(time.Since(started).Milliseconds(), ttft, response.StatusCode, usage)
+}
+
+func (m *measurements) nextVariation(config core.RunConfig) (int64, bool) {
+	sequence := m.sequence.Add(1)
+	policy := config.CachePolicy
+	if policy == "" {
+		policy = core.CachePolicyReuse
+	}
+	if policy == core.CachePolicyBypass {
+		return sequence, true
+	}
+	if policy == core.CachePolicyReuse {
+		return sequence, false
+	}
+	percent := config.VariationPercent
+	if percent == 0 {
+		percent = 30
+	}
+	return sequence, (sequence*37)%100 < int64(percent)
 }
 
 func (m *measurements) recordSuccess(latency, ttft int64, status int, usage core.TokenUsage) {

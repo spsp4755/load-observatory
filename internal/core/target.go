@@ -51,5 +51,11 @@ func ValidateRunConfig(config RunConfig) error {
 	if config.MaxTokens < 1 || config.MaxTokens > MaxModelTokens {
 		return errors.New("max_tokens must be between 1 and 1000000")
 	}
+	if config.CachePolicy != "" && config.CachePolicy != CachePolicyMixed && config.CachePolicy != CachePolicyReuse && config.CachePolicy != CachePolicyBypass {
+		return errors.New("cache_policy must be mixed, reuse, or bypass")
+	}
+	if config.VariationPercent < 0 || config.VariationPercent > 100 {
+		return errors.New("variation_percent must be between 0 and 100")
+	}
 	return nil
 }

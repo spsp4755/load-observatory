@@ -14,6 +14,14 @@ const (
 	LoadModeRPS LoadMode = "rps"
 )
 
+type CachePolicy string
+
+const (
+	CachePolicyMixed  CachePolicy = "mixed"
+	CachePolicyReuse  CachePolicy = "reuse"
+	CachePolicyBypass CachePolicy = "bypass"
+)
+
 type TargetType string
 
 const (
@@ -30,15 +38,18 @@ type Target struct {
 }
 
 type RunConfig struct {
-	TargetID        string   `json:"target_id"`
-	Mode            LoadMode `json:"mode"`
-	VUs             int      `json:"vus"`
-	RPS             int      `json:"rps"`
-	DurationSeconds int      `json:"duration_seconds"`
-	Prompt          string   `json:"prompt"`
-	MaxTokens       int      `json:"max_tokens"`
-	MaxErrorPercent float64  `json:"max_error_percent"`
-	MaxP95Millis    int64    `json:"max_p95_millis"`
+	TargetID         string      `json:"target_id"`
+	Mode             LoadMode    `json:"mode"`
+	VUs              int         `json:"vus"`
+	RPS              int         `json:"rps"`
+	DurationSeconds  int         `json:"duration_seconds"`
+	Prompt           string      `json:"prompt"`
+	MaxTokens        int         `json:"max_tokens"`
+	MaxErrorPercent  float64     `json:"max_error_percent"`
+	MaxP95Millis     int64       `json:"max_p95_millis"`
+	CachePolicy      CachePolicy `json:"cache_policy"`
+	VariationPercent int         `json:"variation_percent"`
+	WorkloadID       string      `json:"workload_id,omitempty"`
 }
 
 type Distribution struct {

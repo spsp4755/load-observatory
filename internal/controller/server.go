@@ -90,6 +90,7 @@ func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
 	if config.Run.MaxP95Millis == 0 {
 		config.Run.MaxP95Millis = 2000
 	}
+	applyWorkloadDefaults(&config.Run)
 	if config.StartLoad == 0 {
 		if config.Run.Mode == core.LoadModeRPS {
 			config.StartLoad = 10
@@ -169,11 +170,21 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if config.MaxP95Millis == 0 {
 		config.MaxP95Millis = 2000
 	}
+	applyWorkloadDefaults(&config)
 	if err := core.ValidateRunConfig(config); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusCreated, s.store.CreateRun(config))
+}
+
+func applyWorkloadDefaults(config *core.RunConfig) {
+	if config.CachePolicy == "" {
+		config.CachePolicy = core.CachePolicyMixed
+	}
+	if config.CachePolicy == core.CachePolicyMixed && config.VariationPercent == 0 {
+		config.VariationPercent = 30
+	}
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
