@@ -11,8 +11,22 @@ const loadText = (run) => run.config.mode === "rps" ? `${run.config.rps} RPS` : 
 
 function Details({ run }) {
   if (!run) return <section className="panel empty">실행 기록을 선택하면 상세 분석이 표시됩니다.</section>;
-  const result = run.result || {}; const total = result.total || (result.successes || 0) + (result.failures || 0);
-  return <section className="details"><section className="panel"><h3>실행 상세</h3><div className="metrics"><Metric label="성공률" value={rate(result.successes || 0, total)} /><Metric label="P95" value={milliseconds(result.latency?.p95_millis ?? result.p95_millis)} /><Metric label="처리량" value={result.throughput_rps ? `${result.throughput_rps.toFixed(1)} RPS` : "-"} /></div><p className="muted">{loadText(run)} · {run.config.duration_seconds}초 · 최대 출력 {run.config.max_tokens} 토큰 · {policyText(run)}</p><p className="prompt-preview">{run.config.prompt}</p></section></section>;
+  const result = run.result || {};
+  const total = result.total || (result.successes || 0) + (result.failures || 0);
+  const latency = result.latency || {};
+  const ttft = result.ttft || {};
+  const tokens = result.tokens || {};
+  const verdict = getVerdict(run);
+  const distribution = (values) => <div className="distribution-values"><span>최소 <b>{milliseconds(values.min_millis)}</b></span><span>평균 <b>{milliseconds(values.avg_millis)}</b></span><span>P50 <b>{milliseconds(values.p50_millis)}</b></span><span>P95 <b>{milliseconds(values.p95_millis)}</b></span><span>P99 <b>{milliseconds(values.p99_millis)}</b></span><span>최대 <b>{milliseconds(values.max_millis)}</b></span></div>;
+  return <section className="details">
+    <section className={`panel verdict ${verdict.status}`}><div><h3>{verdict.status === "stable" ? "안정 구간" : verdict.status === "at-risk" ? "위험 구간" : "판정 대기"}</h3><p>{verdict.recommendation}</p></div><span>오류 기준 {run.config.max_error_percent ?? 2}% · P95 기준 {milliseconds(run.config.max_p95_millis ?? 2000)}</span></section>
+    <section className="panel"><h3>실행 설정</h3><div className="config-summary"><span>부하 <b>{loadText(run)}</b></span><span>시간 <b>{run.config.duration_seconds}초</b></span><span>최대 출력 <b>{run.config.max_tokens} 토큰</b></span><span>캐시 <b>{policyText(run)}</b></span></div><p className="prompt-preview">{run.config.prompt}</p></section>
+    <section className="panel"><h3>운영 요약</h3><div className="metrics"><Metric label="총 요청" value={total || "—"} /><Metric label="성공률" value={rate(result.successes || 0, total)} /><Metric label="처리량" value={result.throughput_rps ? `${result.throughput_rps.toFixed(2)} RPS` : "—"} /><Metric label="오류율" value={rate(result.failures || 0, total)} /></div></section>
+    <section className="panel"><h3>지연 분석</h3><div className="distribution"><div><h4>응답 시간</h4>{distribution(latency)}</div><div><h4>첫 토큰 도착 (TTFT)</h4>{distribution(ttft)}</div></div></section>
+    {tokens.completion > 0 && <section className="panel"><h3>모델 출력 분석</h3><div className="metrics"><Metric label="입력 토큰" value={tokens.prompt} /><Metric label="출력 토큰" value={tokens.completion} /><Metric label="추론 토큰" value={tokens.reasoning || "—"} /><Metric label="출력 속도" value={`${tokens.output_per_second?.toFixed(1) || 0} tok/s`} /></div></section>}
+    <section className="panel"><h3>시간별 추세</h3><table><thead><tr><th>경과</th><th>요청</th><th>성공</th><th>실패</th><th>P95</th></tr></thead><tbody>{(result.timeline || []).length ? result.timeline.map((point) => <tr key={point.second}><td>{point.second + 1}초</td><td>{point.requests}</td><td>{point.successes}</td><td>{point.failures}</td><td>{milliseconds(point.p95_millis)}</td></tr>) : <tr><td colSpan="5">추세 데이터가 없습니다.</td></tr>}</tbody></table></section>
+    <section className="split"><section className="panel"><h3>응답 상태</h3><table><tbody>{Object.entries(result.status_counts || {}).length ? Object.entries(result.status_counts).map(([status, count]) => <tr key={status}><td>HTTP {status}</td><td>{count}</td></tr>) : <tr><td>데이터 없음</td></tr>}</tbody></table></section><section className="panel"><h3>최근 오류</h3>{(result.errors || []).length ? <ul className="errors">{result.errors.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul> : <p className="muted">오류가 없습니다.</p>}</section></section>
+  </section>;
 }
 
 function TestSettings({ form, update, profiles, selectedProfileId, selectProfile }) {

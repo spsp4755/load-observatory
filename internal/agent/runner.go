@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -99,17 +100,25 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		if varied {
 			prompt += fmt.Sprintf("\n\n[Load Observatory variation run=%s request=%d]", config.WorkloadID, sequence)
 		}
-		payload, err := json.Marshal(struct {
+		requestPayload := struct {
 			Model    string `json:"model"`
 			Messages []struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
-			MaxTokens int `json:"max_tokens"`
+			MaxTokens     int  `json:"max_tokens"`
+			Stream        bool `json:"stream"`
+			StreamOptions struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
 		}{Model: target.Model, Messages: []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
-		}{{Role: "user", Content: prompt}}, MaxTokens: config.MaxTokens})
+		}{{Role: "user", Content: prompt}}, MaxTokens: config.MaxTokens, Stream: target.Type == core.TargetTypeModel}
+		if target.Type == core.TargetTypeModel {
+			requestPayload.StreamOptions.IncludeUsage = true
+		}
+		payload, err := json.Marshal(requestPayload)
 		if err != nil {
 			m.recordFailure(time.Since(started).Milliseconds(), "encode request")
 			return
@@ -137,30 +146,90 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	}
 	usage := core.TokenUsage{}
 	if target.Type == core.TargetTypeModel && response.StatusCode >= 200 && response.StatusCode < 400 {
-		var payload struct {
-			Usage struct {
-				PromptTokens            int64 `json:"prompt_tokens"`
-				CompletionTokens        int64 `json:"completion_tokens"`
-				ReasoningTokens         int64 `json:"reasoning_tokens"`
-				CompletionTokensDetails struct {
-					ReasoningTokens int64 `json:"reasoning_tokens"`
-				} `json:"completion_tokens_details"`
-			} `json:"usage"`
-		}
-		_ = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload)
-		usage.Prompt, usage.Completion, usage.Reasoning = payload.Usage.PromptTokens, payload.Usage.CompletionTokens, payload.Usage.ReasoningTokens
-		if usage.Reasoning == 0 {
-			usage.Reasoning = payload.Usage.CompletionTokensDetails.ReasoningTokens
+		var readErr error
+		ttft, usage, readErr = readModelResponse(response, started)
+		if readErr != nil {
+			if ctx.Err() == nil {
+				m.recordFailure(time.Since(started).Milliseconds(), readErr.Error())
+			}
+			return
 		}
 	} else {
 		_, _ = io.Copy(io.Discard, response.Body)
 	}
 	_ = response.Body.Close()
+	latency := time.Since(started).Milliseconds()
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
-		m.recordFailureWithStatus(time.Since(started).Milliseconds(), response.StatusCode, "HTTP "+response.Status)
+		m.recordFailureWithStatus(latency, response.StatusCode, "HTTP "+response.Status)
 		return
 	}
-	m.recordSuccess(time.Since(started).Milliseconds(), ttft, response.StatusCode, usage)
+	m.recordSuccess(latency, ttft, response.StatusCode, usage)
+}
+
+func readModelResponse(response *http.Response, started time.Time) (int64, core.TokenUsage, error) {
+	if !strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
+		return readModelJSON(response.Body, time.Since(started).Milliseconds())
+	}
+	var usage core.TokenUsage
+	ttft := int64(0)
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+			continue
+		}
+		var event struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Usage modelUsage `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			return 0, usage, fmt.Errorf("decode model stream: %w", err)
+		}
+		if ttft == 0 && len(event.Choices) > 0 && (event.Choices[0].Delta.Content != "" || event.Choices[0].Delta.ReasoningContent != "") {
+			ttft = time.Since(started).Milliseconds()
+		}
+		usage = event.Usage.tokenUsage()
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, usage, fmt.Errorf("read model stream: %w", err)
+	}
+	if ttft == 0 {
+		ttft = time.Since(started).Milliseconds()
+	}
+	return ttft, usage, nil
+}
+
+type modelUsage struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	ReasoningTokens  int64 `json:"reasoning_tokens"`
+	Details          struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+func (usage modelUsage) tokenUsage() core.TokenUsage {
+	reasoning := usage.ReasoningTokens
+	if reasoning == 0 {
+		reasoning = usage.Details.ReasoningTokens
+	}
+	return core.TokenUsage{Prompt: usage.PromptTokens, Completion: usage.CompletionTokens, Reasoning: reasoning}
+}
+
+func readModelJSON(body io.Reader, ttft int64) (int64, core.TokenUsage, error) {
+	var payload struct {
+		Usage modelUsage `json:"usage"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&payload); err != nil && err != io.EOF {
+		return 0, core.TokenUsage{}, fmt.Errorf("decode model response: %w", err)
+	}
+	return ttft, payload.Usage.tokenUsage(), nil
 }
 
 func (m *measurements) nextVariation(config core.RunConfig) (int64, bool) {

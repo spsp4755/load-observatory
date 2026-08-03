@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/spsp4755/load-observatory/internal/core"
 )
@@ -114,6 +115,34 @@ func TestRunTargetCollectsDetailedMetricsAndUsage(t *testing.T) {
 	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, Prompt: "test", MaxTokens: 32})
 	if result.Total == 0 || result.Latency.P95Millis < 0 || result.Tokens.Completion == 0 || result.StatusCounts["503"] == 0 || len(result.Timeline) == 0 {
 		t.Fatalf("unexpected detailed result: %+v", result)
+	}
+}
+
+func TestRunTargetMeasuresFirstTokenFromStreamingModelResponse(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if !request.Stream {
+			t.Fatal("model request must enable streaming to measure first-token latency")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		if flush, ok := w.(http.Flusher); ok {
+			flush.Flush()
+		}
+		time.Sleep(25 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n"))
+	}))
+	defer target.Close()
+
+	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, Prompt: "test", MaxTokens: 32})
+	if result.Successes == 0 || result.TTFTP95Millis == 0 || result.Tokens.Completion == 0 {
+		t.Fatalf("expected streaming first-token and token metrics, got %+v", result)
 	}
 }
 
