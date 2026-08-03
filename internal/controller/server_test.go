@@ -130,7 +130,7 @@ func TestListTargetsRedactsAPIKey(t *testing.T) {
 	server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewBufferString(`{"name":"saved","type":"model","url":"http://10.0.0.1:8000/v1/chat/completions","model":"qwen","api_key":"secret"}`)))
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/targets", nil))
-	if response.Code != http.StatusOK || bytes.Contains(response.Body.Bytes(), []byte("secret")) {
+	if response.Code != http.StatusOK || bytes.Contains(response.Body.Bytes(), []byte("secret")) || !bytes.Contains(response.Body.Bytes(), []byte(`"has_api_key":true`)) {
 		t.Fatalf("API key leaked in target list: %d %s", response.Code, response.Body.String())
 	}
 }

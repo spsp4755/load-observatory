@@ -188,7 +188,7 @@ func (s *Server) deleteTarget(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func publicTarget(target core.Target) core.Target { target.APIKey = ""; return target }
+func publicTarget(target core.Target) core.Target { target.HasAPIKey = target.APIKey != ""; target.APIKey = ""; return target }
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var config core.RunConfig

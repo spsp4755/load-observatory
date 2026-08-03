@@ -36,6 +36,7 @@ type Target struct {
 	URL    string     `json:"url"`
 	Model  string     `json:"model,omitempty"`
 	APIKey string     `json:"api_key,omitempty"`
+	HasAPIKey bool    `json:"has_api_key,omitempty"`
 }
 
 type RunConfig struct {
