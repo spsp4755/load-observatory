@@ -35,6 +35,28 @@ func IsRunStable(run Run) bool {
 	return errorRate <= run.Config.MaxErrorPercent && p95 <= run.Config.MaxP95Millis
 }
 
+func InstabilityMessage(run Run) string {
+	total := run.Result.Total
+	if total == 0 {
+		total = run.Result.Successes + run.Result.Failures
+	}
+	if total == 0 {
+		return "no completed requests"
+	}
+	errorRate := float64(run.Result.Failures) * 100 / float64(total)
+	if errorRate > run.Config.MaxErrorPercent {
+		return fmt.Sprintf("error rate %.1f%% > allowed %.1f%%", errorRate, run.Config.MaxErrorPercent)
+	}
+	p95 := run.Result.Latency.P95Millis
+	if p95 == 0 {
+		p95 = run.Result.P95Millis
+	}
+	if p95 > run.Config.MaxP95Millis {
+		return fmt.Sprintf("P95 %dms > allowed %dms", p95, run.Config.MaxP95Millis)
+	}
+	return "result did not meet stability criteria"
+}
+
 func AdvanceSearch(search *AutoSearch, run Run) (int, bool) {
 	load := run.Config.VUs
 	if run.Config.Mode == LoadModeRPS {
@@ -67,9 +89,10 @@ func AdvanceSearch(search *AutoSearch, run Run) (int, bool) {
 		return next, true
 	}
 	search.FailedLoad = load
+	reason := InstabilityMessage(run)
 	if search.StableLoad == 0 {
 		search.Status = AutoSearchCompleted
-		search.Message = "starting load was not stable"
+		search.Message = "starting load was not stable: " + reason
 		return 0, false
 	}
 	if search.FailedLoad-search.StableLoad <= 1 {

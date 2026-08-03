@@ -33,6 +33,9 @@ func TestAdvanceSearchHandlesFirstFailureAndMaximum(t *testing.T) {
 	if _, more := AdvanceSearch(&first, searchRun(5, false)); more || first.RecommendedLoad != 0 {
 		t.Fatalf("unexpected first failure: %+v", first)
 	}
+	if first.Message != "starting load was not stable: error rate 3.0% > allowed 2.0%" {
+		t.Fatalf("unexpected message: %s", first.Message)
+	}
 	ceiling := AutoSearch{Status: AutoSearchRunning, Config: AutoSearchConfig{MaxLoad: 10}}
 	if _, more := AdvanceSearch(&ceiling, searchRun(10, true)); more || ceiling.RecommendedLoad != 10 {
 		t.Fatalf("unexpected ceiling: %+v", ceiling)

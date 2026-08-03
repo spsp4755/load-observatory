@@ -1,7 +1,7 @@
 export const presets = {
-  short: { prompt: "Answer in one short paragraph.", maxTokens: "256" },
-  coding: { prompt: "Implement a production-ready Go HTTP endpoint with validation and tests.", maxTokens: "4096" },
-  long: { prompt: "Provide a detailed implementation plan with code examples and edge cases.", maxTokens: "32768" },
+  short: { prompt: "Answer in one short paragraph.", maxTokens: "1280" },
+  coding: { prompt: "Implement a production-ready Go HTTP endpoint with validation and tests.", maxTokens: "20480" },
+  long: { prompt: "Provide a detailed implementation plan with code examples and edge cases.", maxTokens: "163840" },
 };
 
 export function filterRuns(runs, { query = "", status = "all", verdict = "all" }) {
