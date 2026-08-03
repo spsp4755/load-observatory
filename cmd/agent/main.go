@@ -11,7 +11,11 @@ import (
 
 func main() {
 	controllerURL := os.Getenv("CONTROLLER_URL")
-	if controllerURL == "" { controllerURL = "http://127.0.0.1:8080" }
+	if controllerURL == "" {
+		port := os.Getenv("CONTROLLER_PORT")
+		if port == "" { port = "8080" }
+		controllerURL = "http://127.0.0.1:" + port
+	}
 	for {
 		ran, err := agent.RunOnce(context.Background(), controllerURL)
 		if err != nil { log.Printf("agent: %v", err) }
