@@ -57,5 +57,8 @@ func ValidateRunConfig(config RunConfig) error {
 	if config.VariationPercent < 0 || config.VariationPercent > 100 {
 		return errors.New("variation_percent must be between 0 and 100")
 	}
+	if config.Shards < 0 || config.Shards > 64 {
+		return errors.New("shards must be between 1 and 64")
+	}
 	return nil
 }

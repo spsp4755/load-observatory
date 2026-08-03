@@ -109,6 +109,9 @@ func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
 		config.Run.MaxP95Millis = 2000
 	}
 	applyWorkloadDefaults(&config.Run)
+	if config.Run.Shards == 0 {
+		config.Run.Shards = 3
+	}
 	if config.StartLoad == 0 {
 		if config.Run.Mode == core.LoadModeRPS {
 			config.StartLoad = 10
@@ -207,6 +210,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		config.MaxP95Millis = 2000
 	}
 	applyWorkloadDefaults(&config)
+	if config.Shards == 0 {
+		config.Shards = 3
+	}
 	if err := core.ValidateRunConfig(config); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

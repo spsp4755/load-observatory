@@ -76,7 +76,7 @@ func TestSearchSchedulesNextStepAfterStableResult(t *testing.T) {
 	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
 	server := NewServer(memory)
 	create := httptest.NewRecorder()
-	server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/searches", bytes.NewBufferString(`{"run":{"target_id":"`+target.ID+`","mode":"vu","duration_seconds":1,"max_tokens":32,"max_error_percent":2,"max_p95_millis":2000},"start_load":5,"max_load":10}`)))
+	server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/searches", bytes.NewBufferString(`{"run":{"target_id":"`+target.ID+`","mode":"vu","duration_seconds":1,"max_tokens":32,"max_error_percent":2,"max_p95_millis":2000,"shards":1},"start_load":5,"max_load":10}`)))
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create search: %d %s", create.Code, create.Body.String())
 	}
