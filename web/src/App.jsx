@@ -9,6 +9,7 @@ function Metric({ label, value, tone = "" }) { return <section className={`metri
 export default function App() {
   const [page, setPage] = useState("test"); const [form, setForm] = useState(initial); const [run, setRun] = useState(null); const [runs, setRuns] = useState([]); const [health, setHealth] = useState(null); const [error, setError] = useState(""); const [submitting, setSubmitting] = useState(false);
   const update = (event) => setForm({ ...form, [event.target.name]: event.target.value });
+	useEffect(() => { const input = document.querySelector('input[name="maxTokens"]'); if (input) input.max = "1000000"; }, [page]);
   const refreshRuns = async () => { try { setRuns(await listRuns()); } catch (err) { setError(err.message); } };
   useEffect(() => { if (!run || run.status === "completed") return undefined; const timer = setInterval(async () => { try { setRun(await getRun(run.id)); } catch (err) { setError(err.message); } }, 2000); return () => clearInterval(timer); }, [run]);
   useEffect(() => { if (page === "records") refreshRuns(); }, [page]);

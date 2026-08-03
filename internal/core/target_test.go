@@ -27,3 +27,10 @@ func TestValidateRunConfigRejectsTooManyModelTokens(t *testing.T) {
 		t.Fatal("expected max token validation error")
 	}
 }
+
+func TestValidateRunConfigAcceptsOneMillionModelTokens(t *testing.T) {
+	err := ValidateRunConfig(RunConfig{Mode: LoadModeVU, VUs: 1, DurationSeconds: 1, MaxTokens: 1000000})
+	if err != nil {
+		t.Fatalf("one million tokens rejected: %v", err)
+	}
+}

@@ -4,7 +4,7 @@ const (
 	MaxVUs             = 500
 	MaxRPS             = 2000
 	MaxDurationSeconds = 60 * 60
-	MaxModelTokens     = 32768
+	MaxModelTokens     = 1000000
 )
 
 type LoadMode string
