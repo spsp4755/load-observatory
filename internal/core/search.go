@@ -32,7 +32,13 @@ func IsRunStable(run Run) bool {
 	if p95 == 0 {
 		p95 = run.Result.P95Millis
 	}
-	return errorRate <= run.Config.MaxErrorPercent && p95 <= run.Config.MaxP95Millis
+	if errorRate > run.Config.MaxErrorPercent || p95 > run.Config.MaxP95Millis {
+		return false
+	}
+	if run.Config.MaxTTFTP95Millis > 0 && run.Result.TTFT.P95Millis > run.Config.MaxTTFTP95Millis {
+		return false
+	}
+	return run.Config.MinOutputTokensPerSecond == 0 || run.Result.Tokens.OutputPerSecond >= run.Config.MinOutputTokensPerSecond
 }
 
 func InstabilityMessage(run Run) string {
@@ -53,6 +59,12 @@ func InstabilityMessage(run Run) string {
 	}
 	if p95 > run.Config.MaxP95Millis {
 		return fmt.Sprintf("P95 %dms > allowed %dms", p95, run.Config.MaxP95Millis)
+	}
+	if run.Config.MaxTTFTP95Millis > 0 && run.Result.TTFT.P95Millis > run.Config.MaxTTFTP95Millis {
+		return fmt.Sprintf("TTFT P95 %dms > allowed %dms", run.Result.TTFT.P95Millis, run.Config.MaxTTFTP95Millis)
+	}
+	if run.Config.MinOutputTokensPerSecond > 0 && run.Result.Tokens.OutputPerSecond < run.Config.MinOutputTokensPerSecond {
+		return fmt.Sprintf("output rate %.1f tok/s < required %.1f tok/s", run.Result.Tokens.OutputPerSecond, run.Config.MinOutputTokensPerSecond)
 	}
 	return "result did not meet stability criteria"
 }

@@ -74,6 +74,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: LISTEN_ADDR, value: ":8080" }
+            - { name: PROMETHEUS_URL, value: "http://prometheus:9090" }
             - { name: DATABASE_URL, value: "postgres://load_observatory:change-this-before-deploying@postgres:5432/load_observatory?sslmode=disable" }
           ports: [{ containerPort: 8080 }]
 ---
@@ -83,7 +84,7 @@ metadata:
   name: agent
   namespace: load-observatory
 spec:
-  replicas: 1
+  replicas: 3
   selector: { matchLabels: { app: agent } }
   template:
     metadata: { labels: { app: agent } }
@@ -119,6 +120,89 @@ spec:
           image: load-observatory/web:latest
           imagePullPolicy: IfNotPresent
           ports: [{ containerPort: 8080 }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: prometheus-config, namespace: load-observatory }
+data:
+  prometheus.yml: |
+    global: { scrape_interval: 5s }
+    scrape_configs:
+      - job_name: dcgm
+        kubernetes_sd_configs: [{ role: pod }]
+        relabel_configs: [{ source_labels: [__meta_kubernetes_pod_label_app], regex: dcgm-exporter, action: keep }]
+      - job_name: node
+        kubernetes_sd_configs: [{ role: pod }]
+        relabel_configs: [{ source_labels: [__meta_kubernetes_pod_label_app], regex: node-exporter, action: keep }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: prometheus, namespace: load-observatory }
+spec: { selector: { app: prometheus }, ports: [{ port: 9090, targetPort: 9090 }] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: prometheus, namespace: load-observatory }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: prometheus } }
+  template:
+    metadata: { labels: { app: prometheus } }
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          args: ["--config.file=/etc/prometheus/prometheus.yml"]
+          volumeMounts: [{ name: config, mountPath: /etc/prometheus }]
+      volumes: [{ name: config, configMap: { name: prometheus-config } }]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: dcgm-exporter, namespace: load-observatory }
+spec:
+  selector: { matchLabels: { app: dcgm-exporter } }
+  template:
+    metadata: { labels: { app: dcgm-exporter } }
+    spec:
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04
+          ports: [{ containerPort: 9400 }]
+          securityContext: { capabilities: { add: [SYS_ADMIN] } }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: prometheus, namespace: load-observatory }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: load-observatory-prometheus }
+rules: [{ apiGroups: [""], resources: [pods], verbs: [get, list, watch] }]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: load-observatory-prometheus }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: load-observatory-prometheus }
+subjects: [{ kind: ServiceAccount, name: prometheus, namespace: load-observatory }]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: node-exporter, namespace: load-observatory }
+spec:
+  selector: { matchLabels: { app: node-exporter } }
+  template:
+    metadata: { labels: { app: node-exporter } }
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: node-exporter
+          image: prom/node-exporter:v1.8.2
+          args: ["--path.rootfs=/host"]
+          ports: [{ containerPort: 9100 }]
+          volumeMounts: [{ name: root, mountPath: /host, readOnly: true }]
+      volumes: [{ name: root, hostPath: { path: / } }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/spsp4755/load-observatory/internal/controller"
+	"github.com/spsp4755/load-observatory/internal/monitor"
 	"github.com/spsp4755/load-observatory/internal/store"
 )
 
@@ -24,5 +25,5 @@ func main() {
 		defer postgres.Close()
 		data = postgres
 	}
-	log.Fatal(http.ListenAndServe(address, controller.NewServer(data)))
+	log.Fatal(http.ListenAndServe(address, controller.NewServerWithMonitor(data, monitor.New(os.Getenv("PROMETHEUS_URL")))))
 }

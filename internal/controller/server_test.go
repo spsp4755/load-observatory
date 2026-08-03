@@ -55,7 +55,7 @@ func TestAgentClaimAndResultCompleteRun(t *testing.T) {
 	}
 
 	result := httptest.NewRecorder()
-	server.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/agent/runs/"+run.ID+"/result", bytes.NewBufferString(`{"successes":1}`)))
+	server.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/agent/runs/"+run.ID+"/shards/shard-3/result", bytes.NewBufferString(`{"successes":1}`)))
 	if result.Code != http.StatusOK || !bytes.Contains(result.Body.Bytes(), []byte(`"status":"completed"`)) {
 		t.Fatalf("unexpected result: %d %s", result.Code, result.Body.String())
 	}
@@ -86,7 +86,7 @@ func TestSearchSchedulesNextStepAfterStableResult(t *testing.T) {
 		t.Fatalf("claim: %d %s", claim.Code, claim.Body.String())
 	}
 	result := httptest.NewRecorder()
-	server.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/agent/runs/run-3/result", bytes.NewBufferString(`{"total":10,"successes":10,"latency":{"p95_millis":100}}`)))
+	server.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/agent/runs/run-3/shards/shard-4/result", bytes.NewBufferString(`{"total":10,"successes":10,"latency":{"p95_millis":100}}`)))
 	if result.Code != http.StatusOK {
 		t.Fatalf("result: %d", result.Code)
 	}

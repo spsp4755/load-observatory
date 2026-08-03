@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
 )
 
 func TestRunOnceClaimsAndReportsResult(t *testing.T) {
@@ -16,8 +15,8 @@ func TestRunOnceClaimsAndReportsResult(t *testing.T) {
 	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/agent/claim":
-			fmt.Fprintf(w, `{"run":{"id":"run-1","config":{"mode":"vu","vus":1,"duration_seconds":1}},"target":{"type":"web","url":%q}}`, target.URL)
-		case "/api/agent/runs/run-1/result":
+			fmt.Fprintf(w, `{"run":{"id":"run-1","config":{"mode":"vu","vus":1,"duration_seconds":1}},"shard":{"id":"shard-1"},"target":{"type":"web","url":%q}}`, target.URL)
+		case "/api/agent/runs/run-1/shards/shard-1/result":
 			reported = true
 			w.WriteHeader(http.StatusOK)
 		default:

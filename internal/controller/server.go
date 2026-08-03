@@ -6,12 +6,19 @@ import (
 	"strings"
 
 	"github.com/spsp4755/load-observatory/internal/core"
+	"github.com/spsp4755/load-observatory/internal/monitor"
 	"github.com/spsp4755/load-observatory/internal/store"
 )
 
-type Server struct{ store store.Store }
+type Server struct {
+	store   store.Store
+	monitor monitor.Client
+}
 
 func NewServer(memory store.Store) *Server { return &Server{store: memory} }
+func NewServerWithMonitor(memory store.Store, client monitor.Client) *Server {
+	return &Server{store: memory, monitor: client}
+}
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -42,7 +49,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/claim":
 		s.claimRun(w)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/result"):
-		s.completeRun(w, r)
+		s.completeShard(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/runs/"):
 		s.getRun(w, r)
 	default:
@@ -59,19 +66,26 @@ func (s *Server) claimRun(w http.ResponseWriter) {
 	writeJSON(w, http.StatusOK, assignment)
 }
 
-func (s *Server) completeRun(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/agent/runs/"), "/result")
+func (s *Server) completeShard(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/agent/runs/"), "/result"), "/shards/")
+	if len(parts) != 2 || parts[1] == "" {
+		http.Error(w, "invalid shard result path", http.StatusBadRequest)
+		return
+	}
 	var result core.RunResult
 	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	run, ok := s.store.CompleteRun(id, result)
+	run, ok := s.store.CompleteShard(parts[1], result)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	s.store.AdvanceSearch(id)
+	if run.Status == "completed" {
+		s.store.AddMonitoring(run.ID, s.monitor.Sample())
+		s.store.AdvanceSearch(run.ID)
+	}
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -197,7 +211,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.store.CreateRun(config))
+	run := s.store.CreateRun(config)
+	s.store.AddMonitoring(run.ID, s.monitor.Sample())
+	writeJSON(w, http.StatusCreated, run)
 }
 
 func applyWorkloadDefaults(config *core.RunConfig) {

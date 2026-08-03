@@ -77,6 +77,17 @@ func (s *PostgresStore) CompleteRun(id string, r core.RunResult) (core.Run, bool
 	}
 	return v, ok
 }
+func (s *PostgresStore) CompleteShard(id string, r core.RunResult) (core.Run, bool) {
+	v, ok := s.memory.CompleteShard(id, r)
+	if ok {
+		s.persist()
+	}
+	return v, ok
+}
+func (s *PostgresStore) AddMonitoring(id string, sample core.MonitoringSample) {
+	s.memory.AddMonitoring(id, sample)
+	s.persist()
+}
 func (s *PostgresStore) TouchAgent()              { s.memory.TouchAgent() }
 func (s *PostgresStore) Health() (int, int, bool) { return s.memory.Health() }
 func (s *PostgresStore) CreateSearch(v core.AutoSearchConfig) core.AutoSearch {

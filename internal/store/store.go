@@ -19,6 +19,8 @@ type Store interface {
 	ListRuns() []core.Run
 	ClaimRun() (core.Assignment, bool)
 	CompleteRun(string, core.RunResult) (core.Run, bool)
+	CompleteShard(string, core.RunResult) (core.Run, bool)
+	AddMonitoring(string, core.MonitoringSample)
 	TouchAgent()
 	Health() (int, int, bool)
 	CreateSearch(core.AutoSearchConfig) core.AutoSearch
@@ -29,34 +31,40 @@ type Store interface {
 }
 
 type MemoryStore struct {
-	mu        sync.RWMutex
-	nextID    int
-	targets   map[string]core.Target
-	runs      map[string]core.Run
-	searches  map[string]core.AutoSearch
-	searchRun map[string]string
-	agentSeen time.Time
+	mu           sync.RWMutex
+	nextID       int
+	targets      map[string]core.Target
+	runs         map[string]core.Run
+	searches     map[string]core.AutoSearch
+	searchRun    map[string]string
+	shards       map[string]core.Shard
+	shardResults map[string]core.RunResult
+	agentSeen    time.Time
 }
 
 func (s *MemoryStore) Snapshot() ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return json.Marshal(struct {
-		NextID    int                        `json:"next_id"`
-		Targets   map[string]core.Target     `json:"targets"`
-		Runs      map[string]core.Run        `json:"runs"`
-		Searches  map[string]core.AutoSearch `json:"searches"`
-		SearchRun map[string]string          `json:"search_run"`
-	}{s.nextID, s.targets, s.runs, s.searches, s.searchRun})
+		NextID       int                        `json:"next_id"`
+		Targets      map[string]core.Target     `json:"targets"`
+		Runs         map[string]core.Run        `json:"runs"`
+		Searches     map[string]core.AutoSearch `json:"searches"`
+		SearchRun    map[string]string          `json:"search_run"`
+		Shards       map[string]core.Shard      `json:"shards"`
+		ShardResults map[string]core.RunResult  `json:"shard_results"`
+	}{s.nextID, s.targets, s.runs, s.searches, s.searchRun, s.shards, s.shardResults})
 }
 
 func (s *MemoryStore) Restore(data []byte) error {
 	var state struct {
-		NextID    int                        `json:"next_id"`
-		Targets   map[string]core.Target     `json:"targets"`
-		Runs      map[string]core.Run        `json:"runs"`
-		Searches  map[string]core.AutoSearch `json:"searches"`
-		SearchRun map[string]string          `json:"search_run"`
+		NextID       int                        `json:"next_id"`
+		Targets      map[string]core.Target     `json:"targets"`
+		Runs         map[string]core.Run        `json:"runs"`
+		Searches     map[string]core.AutoSearch `json:"searches"`
+		SearchRun    map[string]string          `json:"search_run"`
+		Shards       map[string]core.Shard      `json:"shards"`
+		ShardResults map[string]core.RunResult  `json:"shard_results"`
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return err
@@ -68,6 +76,8 @@ func (s *MemoryStore) Restore(data []byte) error {
 	s.runs = state.Runs
 	s.searches = state.Searches
 	s.searchRun = state.SearchRun
+	s.shards = state.Shards
+	s.shardResults = state.ShardResults
 	if s.targets == nil {
 		s.targets = map[string]core.Target{}
 	}
@@ -79,6 +89,12 @@ func (s *MemoryStore) Restore(data []byte) error {
 	}
 	if s.searchRun == nil {
 		s.searchRun = map[string]string{}
+	}
+	if s.shards == nil {
+		s.shards = map[string]core.Shard{}
+	}
+	if s.shardResults == nil {
+		s.shardResults = map[string]core.RunResult{}
 	}
 	return nil
 }
@@ -111,7 +127,7 @@ func (s *MemoryStore) Health() (int, int, bool) {
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{targets: map[string]core.Target{}, runs: map[string]core.Run{}, searches: map[string]core.AutoSearch{}, searchRun: map[string]string{}}
+	return &MemoryStore{targets: map[string]core.Target{}, runs: map[string]core.Run{}, searches: map[string]core.AutoSearch{}, searchRun: map[string]string{}, shards: map[string]core.Shard{}, shardResults: map[string]core.RunResult{}}
 }
 
 func (s *MemoryStore) CreateSearch(config core.AutoSearchConfig) core.AutoSearch {
@@ -135,6 +151,7 @@ func (s *MemoryStore) queueSearchRunLocked(search *core.AutoSearch, load int) {
 	run := core.Run{ID: fmt.Sprintf("run-%d", s.nextID), Status: "queued", SearchID: search.ID, Config: config}
 	run.Config.WorkloadID = run.ID
 	s.runs[run.ID] = run
+	s.queueShardsLocked(run)
 	search.RunIDs = append(search.RunIDs, run.ID)
 	s.searchRun[run.ID] = search.ID
 }
@@ -238,7 +255,20 @@ func (s *MemoryStore) CreateRun(config core.RunConfig) core.Run {
 	run := core.Run{ID: fmt.Sprintf("run-%d", s.nextID), Status: "queued", Config: config}
 	run.Config.WorkloadID = run.ID
 	s.runs[run.ID] = run
+	s.queueShardsLocked(run)
 	return run
+}
+
+func (s *MemoryStore) queueShardsLocked(run core.Run) {
+	count := run.Config.Shards
+	if count < 1 {
+		count = 1
+	}
+	for i := 0; i < count; i++ {
+		s.nextID++
+		shard := core.Shard{ID: fmt.Sprintf("shard-%d", s.nextID), RunID: run.ID, Status: "queued", Index: i}
+		s.shards[shard.ID] = shard
+	}
 }
 
 func (s *MemoryStore) GetRun(id string) (core.Run, bool) {
@@ -251,17 +281,37 @@ func (s *MemoryStore) GetRun(id string) (core.Run, bool) {
 func (s *MemoryStore) ClaimRun() (core.Assignment, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, run := range s.runs {
-		if run.Status != "queued" {
+	for shardID, shard := range s.shards {
+		if shard.Status != "queued" {
 			continue
 		}
+		run := s.runs[shard.RunID]
 		target, ok := s.targets[run.Config.TargetID]
 		if !ok {
 			continue
 		}
+		shard.Status = "running"
+		s.shards[shardID] = shard
 		run.Status = "running"
-		s.runs[id] = run
-		return core.Assignment{Run: run, Target: target}, true
+		s.runs[run.ID] = run
+		count := run.Config.Shards
+		if count < 1 {
+			count = 1
+		}
+		if run.Config.Mode == core.LoadModeVU {
+			base, extra := run.Config.VUs/count, run.Config.VUs%count
+			run.Config.VUs = base
+			if shard.Index < extra {
+				run.Config.VUs++
+			}
+		} else {
+			base, extra := run.Config.RPS/count, run.Config.RPS%count
+			run.Config.RPS = base
+			if shard.Index < extra {
+				run.Config.RPS++
+			}
+		}
+		return core.Assignment{Run: run, Target: target, Shard: shard}, true
 	}
 	return core.Assignment{}, false
 }
@@ -280,4 +330,65 @@ func (s *MemoryStore) CompleteRun(id string, result core.RunResult) (core.Run, b
 	run.Result = result
 	s.runs[id] = run
 	return run, true
+}
+
+func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	shard, ok := s.shards[id]
+	if !ok {
+		return core.Run{}, false
+	}
+	shard.Status = "completed"
+	s.shards[id] = shard
+	s.shardResults[id] = result
+	run := s.runs[shard.RunID]
+	for _, item := range s.shards {
+		if item.RunID == run.ID && item.Status != "completed" {
+			return run, true
+		}
+	}
+	merged := core.RunResult{StatusCounts: map[string]int64{}}
+	for shardID, item := range s.shards {
+		if item.RunID != run.ID {
+			continue
+		}
+		value := s.shardResults[shardID]
+		merged.Successes += value.Successes
+		merged.Failures += value.Failures
+		merged.Total += value.Total
+		merged.Tokens.Prompt += value.Tokens.Prompt
+		merged.Tokens.Completion += value.Tokens.Completion
+		merged.Tokens.Reasoning += value.Tokens.Reasoning
+		merged.Timeline = append(merged.Timeline, value.Timeline...)
+		merged.Errors = append(merged.Errors, value.Errors...)
+		if value.Latency.P95Millis > merged.Latency.P95Millis {
+			merged.Latency.P95Millis = value.Latency.P95Millis
+		}
+		if value.TTFT.P95Millis > merged.TTFT.P95Millis {
+			merged.TTFT.P95Millis = value.TTFT.P95Millis
+		}
+		for code, count := range value.StatusCounts {
+			merged.StatusCounts[code] += count
+		}
+	}
+	merged.P95Millis, merged.TTFTP95Millis = merged.Latency.P95Millis, merged.TTFT.P95Millis
+	if run.Config.DurationSeconds > 0 {
+		merged.ThroughputRPS = float64(merged.Total) / float64(run.Config.DurationSeconds)
+		merged.Tokens.OutputPerSecond = float64(merged.Tokens.Completion) / float64(run.Config.DurationSeconds)
+	}
+	run.Status = "completed"
+	run.Result = merged
+	s.runs[run.ID] = run
+	return run, true
+}
+
+func (s *MemoryStore) AddMonitoring(id string, sample core.MonitoringSample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if ok {
+		run.Monitoring = append(run.Monitoring, sample)
+		s.runs[id] = run
+	}
 }

@@ -39,18 +39,21 @@ type Target struct {
 }
 
 type RunConfig struct {
-	TargetID         string      `json:"target_id"`
-	Mode             LoadMode    `json:"mode"`
-	VUs              int         `json:"vus"`
-	RPS              int         `json:"rps"`
-	DurationSeconds  int         `json:"duration_seconds"`
-	Prompt           string      `json:"prompt"`
-	MaxTokens        int         `json:"max_tokens"`
-	MaxErrorPercent  float64     `json:"max_error_percent"`
-	MaxP95Millis     int64       `json:"max_p95_millis"`
-	CachePolicy      CachePolicy `json:"cache_policy"`
-	VariationPercent int         `json:"variation_percent"`
-	WorkloadID       string      `json:"workload_id,omitempty"`
+	TargetID                 string      `json:"target_id"`
+	Mode                     LoadMode    `json:"mode"`
+	VUs                      int         `json:"vus"`
+	RPS                      int         `json:"rps"`
+	DurationSeconds          int         `json:"duration_seconds"`
+	Prompt                   string      `json:"prompt"`
+	MaxTokens                int         `json:"max_tokens"`
+	MaxErrorPercent          float64     `json:"max_error_percent"`
+	MaxP95Millis             int64       `json:"max_p95_millis"`
+	MaxTTFTP95Millis         int64       `json:"max_ttft_p95_millis,omitempty"`
+	MinOutputTokensPerSecond float64     `json:"min_output_tokens_per_second,omitempty"`
+	CachePolicy              CachePolicy `json:"cache_policy"`
+	VariationPercent         int         `json:"variation_percent"`
+	WorkloadID               string      `json:"workload_id,omitempty"`
+	Shards                   int         `json:"shards,omitempty"`
 }
 
 type Distribution struct {
@@ -92,12 +95,22 @@ type RunResult struct {
 	Timeline      []TimelinePoint  `json:"timeline"`
 }
 
+type MonitoringSample struct {
+	Status         string  `json:"status"`
+	GPUUtilization float64 `json:"gpu_utilization"`
+	GPUMemoryUsed  float64 `json:"gpu_memory_used"`
+	CPUUtilization float64 `json:"cpu_utilization"`
+	MemoryUsed     float64 `json:"memory_used"`
+	Message        string  `json:"message,omitempty"`
+}
+
 type Run struct {
-	ID       string    `json:"id"`
-	Status   string    `json:"status"`
-	SearchID string    `json:"search_id,omitempty"`
-	Config   RunConfig `json:"config"`
-	Result   RunResult `json:"result"`
+	ID         string             `json:"id"`
+	Status     string             `json:"status"`
+	SearchID   string             `json:"search_id,omitempty"`
+	Config     RunConfig          `json:"config"`
+	Result     RunResult          `json:"result"`
+	Monitoring []MonitoringSample `json:"monitoring,omitempty"`
 }
 
 type AutoSearchStatus string
@@ -129,4 +142,12 @@ type AutoSearch struct {
 type Assignment struct {
 	Run    Run    `json:"run"`
 	Target Target `json:"target"`
+	Shard  Shard  `json:"shard"`
+}
+
+type Shard struct {
+	ID     string `json:"id"`
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+	Index  int    `json:"index"`
 }

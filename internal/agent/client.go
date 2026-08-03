@@ -55,7 +55,7 @@ func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	report, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/agent/runs/"+assignment.Run.ID+"/result", bytes.NewReader(resultBody))
+	report, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/agent/runs/"+assignment.Run.ID+"/shards/"+assignment.Shard.ID+"/result", bytes.NewReader(resultBody))
 	if err != nil {
 		return false, err
 	}

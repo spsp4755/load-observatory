@@ -41,3 +41,14 @@ func TestAdvanceSearchHandlesFirstFailureAndMaximum(t *testing.T) {
 		t.Fatalf("unexpected ceiling: %+v", ceiling)
 	}
 }
+
+func TestInstabilityMessageUsesTTFTAndOutputRate(t *testing.T) {
+	run := Run{Config: RunConfig{MaxErrorPercent: 2, MaxP95Millis: 2000, MaxTTFTP95Millis: 500, MinOutputTokensPerSecond: 10}, Result: RunResult{Total: 1, Successes: 1, TTFT: Distribution{P95Millis: 600}, Tokens: TokenUsage{OutputPerSecond: 5}}}
+	if got := InstabilityMessage(run); got != "TTFT P95 600ms > allowed 500ms" {
+		t.Fatalf("got %q", got)
+	}
+	run.Result.TTFT.P95Millis = 100
+	if got := InstabilityMessage(run); got != "output rate 5.0 tok/s < required 10.0 tok/s" {
+		t.Fatalf("got %q", got)
+	}
+}
