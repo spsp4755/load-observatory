@@ -9,9 +9,9 @@ import (
 	"github.com/spsp4755/load-observatory/internal/store"
 )
 
-type Server struct{ store *store.MemoryStore }
+type Server struct{ store store.Store }
 
-func NewServer(memory *store.MemoryStore) *Server { return &Server{store: memory} }
+func NewServer(memory store.Store) *Server { return &Server{store: memory} }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {

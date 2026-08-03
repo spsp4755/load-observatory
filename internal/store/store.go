@@ -1,12 +1,30 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/spsp4755/load-observatory/internal/core"
 )
+
+type Store interface {
+	CreateTarget(core.Target) core.Target
+	GetTarget(string) (core.Target, bool)
+	CreateRun(core.RunConfig) core.Run
+	GetRun(string) (core.Run, bool)
+	ListRuns() []core.Run
+	ClaimRun() (core.Assignment, bool)
+	CompleteRun(string, core.RunResult) (core.Run, bool)
+	TouchAgent()
+	Health() (int, int, bool)
+	CreateSearch(core.AutoSearchConfig) core.AutoSearch
+	GetSearch(string) (core.AutoSearch, bool)
+	ListSearches() []core.AutoSearch
+	CancelSearch(string) (core.AutoSearch, bool)
+	AdvanceSearch(string)
+}
 
 type MemoryStore struct {
 	mu        sync.RWMutex
@@ -16,6 +34,51 @@ type MemoryStore struct {
 	searches  map[string]core.AutoSearch
 	searchRun map[string]string
 	agentSeen time.Time
+}
+
+func (s *MemoryStore) Snapshot() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return json.Marshal(struct {
+		NextID    int                        `json:"next_id"`
+		Targets   map[string]core.Target     `json:"targets"`
+		Runs      map[string]core.Run        `json:"runs"`
+		Searches  map[string]core.AutoSearch `json:"searches"`
+		SearchRun map[string]string          `json:"search_run"`
+	}{s.nextID, s.targets, s.runs, s.searches, s.searchRun})
+}
+
+func (s *MemoryStore) Restore(data []byte) error {
+	var state struct {
+		NextID    int                        `json:"next_id"`
+		Targets   map[string]core.Target     `json:"targets"`
+		Runs      map[string]core.Run        `json:"runs"`
+		Searches  map[string]core.AutoSearch `json:"searches"`
+		SearchRun map[string]string          `json:"search_run"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID = state.NextID
+	s.targets = state.Targets
+	s.runs = state.Runs
+	s.searches = state.Searches
+	s.searchRun = state.SearchRun
+	if s.targets == nil {
+		s.targets = map[string]core.Target{}
+	}
+	if s.runs == nil {
+		s.runs = map[string]core.Run{}
+	}
+	if s.searches == nil {
+		s.searches = map[string]core.AutoSearch{}
+	}
+	if s.searchRun == nil {
+		s.searchRun = map[string]string{}
+	}
+	return nil
 }
 
 func (s *MemoryStore) ListRuns() []core.Run {
