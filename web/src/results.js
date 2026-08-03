@@ -14,3 +14,16 @@ export function getVerdict(run) {
 
 export const rate = (part, total) => total ? `${(part / total * 100).toFixed(1)}%` : "—";
 export const milliseconds = (value) => value == null ? "—" : `${value} ms`;
+
+export function summarizeMonitoring(samples = []) {
+  const available = samples.filter((sample) => sample.status === "collected");
+  if (!available.length) return { available: false, gpu: 0, gpuMemory: 0, cpu: 0, memory: 0, message: samples.find((sample) => sample.message)?.message || "모니터링 데이터가 없습니다." };
+  return {
+    available: true,
+    gpu: Math.max(...available.map((sample) => sample.gpu_utilization || 0)),
+    gpuMemory: Math.max(...available.map((sample) => sample.gpu_memory_used || 0)),
+    cpu: Math.max(...available.map((sample) => sample.cpu_utilization || 0)),
+    memory: Math.max(...available.map((sample) => sample.memory_used || 0)),
+    message: "",
+  };
+}

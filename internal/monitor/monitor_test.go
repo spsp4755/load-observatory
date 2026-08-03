@@ -13,7 +13,7 @@ func TestSampleReadsPrometheusValues(t *testing.T) {
 	}))
 	defer server.Close()
 	sample := New(server.URL).Sample()
-	if sample.Status != "collected" || sample.GPUUtilization != 42.5 {
+	if sample.Status != "collected" || sample.GPUUtilization != 42.5 || sample.GPUMemoryUsed != 42.5 || sample.MemoryUsed != 42.5 {
 		t.Fatalf("sample: %+v", sample)
 	}
 }
