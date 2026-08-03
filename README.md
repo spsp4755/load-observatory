@@ -57,4 +57,4 @@ kubectl apply -f deploy/k8s.yaml
 
 ## 알려진 MVP 범위
 
-결과 저장소는 현재 Controller 메모리입니다. Pod 재시작 후 결과 보존과 Prometheus/DCGM GPU 지표는 다음 단계에서 PostgreSQL·Prometheus 연동으로 추가합니다.
+Kubernetes 배포에서는 Controller가 `postgres-credentials` Secret의 `DATABASE_URL`을 사용해 실행 기록·등록 모델을 PostgreSQL에 영속화합니다. 배포 전에 `POSTGRES_PASSWORD`와 `DATABASE_URL`의 비밀번호를 함께 교체해야 합니다. 로컬에서 `DATABASE_URL`을 지정하지 않은 경우에만 메모리 저장소를 사용합니다.

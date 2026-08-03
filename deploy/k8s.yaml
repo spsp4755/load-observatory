@@ -13,6 +13,7 @@ stringData:
   POSTGRES_DB: load_observatory
   POSTGRES_USER: load_observatory
   POSTGRES_PASSWORD: change-this-before-deploying
+  DATABASE_URL: postgres://load_observatory:change-this-before-deploying@postgres:5432/load_observatory?sslmode=disable
 ---
 apiVersion: v1
 kind: Service
@@ -75,7 +76,11 @@ spec:
           env:
             - { name: LISTEN_ADDR, value: ":8080" }
             - { name: PROMETHEUS_URL, value: "http://prometheus:9090" }
-            - { name: DATABASE_URL, value: "postgres://load_observatory:change-this-before-deploying@postgres:5432/load_observatory?sslmode=disable" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
           ports: [{ containerPort: 8080 }]
 ---
 apiVersion: apps/v1
