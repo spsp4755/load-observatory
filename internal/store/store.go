@@ -16,6 +16,7 @@ type Store interface {
 	DeleteTarget(string) DeleteTargetResult
 	CreateRun(core.RunConfig) core.Run
 	GetRun(string) (core.Run, bool)
+	CancelRun(string) (core.Run, bool)
 	ListRuns() []core.Run
 	ClaimRun() (core.Assignment, bool)
 	CompleteRun(string, core.RunResult) (core.Run, bool)
@@ -192,13 +193,34 @@ func (s *MemoryStore) CancelSearch(id string) (core.AutoSearch, bool) {
 	search.Message = "cancelled by user"
 	s.searches[id] = search
 	for _, runID := range search.RunIDs {
-		run := s.runs[runID]
-		if run.Status == "queued" || run.Status == "running" {
-			run.Status = "cancelled"
-			s.runs[runID] = run
-		}
+		_, _ = s.cancelRunLocked(runID)
 	}
 	return search, true
+}
+
+func (s *MemoryStore) CancelRun(id string) (core.Run, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelRunLocked(id)
+}
+
+func (s *MemoryStore) cancelRunLocked(id string) (core.Run, bool) {
+	run, ok := s.runs[id]
+	if !ok {
+		return core.Run{}, false
+	}
+	if run.Status != "queued" && run.Status != "running" {
+		return run, true
+	}
+	run.Status = "cancelled"
+	s.runs[id] = run
+	for shardID, shard := range s.shards {
+		if shard.RunID == id && shard.Status == "queued" {
+			shard.Status = "cancelled"
+			s.shards[shardID] = shard
+		}
+	}
+	return run, true
 }
 
 func (s *MemoryStore) AdvanceSearch(runID string) {
@@ -365,6 +387,9 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 	s.shards[id] = shard
 	s.shardResults[id] = result
 	run := s.runs[shard.RunID]
+	if run.Status == "cancelled" {
+		return run, true
+	}
 	for _, item := range s.shards {
 		if item.RunID == run.ID && item.Status != "completed" {
 			return run, true

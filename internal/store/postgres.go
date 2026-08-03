@@ -62,7 +62,14 @@ func (s *PostgresStore) CreateRun(v core.RunConfig) core.Run {
 	return r
 }
 func (s *PostgresStore) GetRun(v string) (core.Run, bool) { return s.memory.GetRun(v) }
-func (s *PostgresStore) ListRuns() []core.Run             { return s.memory.ListRuns() }
+func (s *PostgresStore) CancelRun(v string) (core.Run, bool) {
+	run, ok := s.memory.CancelRun(v)
+	if ok {
+		s.persist()
+	}
+	return run, ok
+}
+func (s *PostgresStore) ListRuns() []core.Run { return s.memory.ListRuns() }
 func (s *PostgresStore) ClaimRun() (core.Assignment, bool) {
 	r, ok := s.memory.ClaimRun()
 	if ok {

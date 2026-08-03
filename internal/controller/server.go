@@ -30,6 +30,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.deleteTarget(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/runs":
 		s.createRun(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/runs/") && strings.HasSuffix(r.URL.Path, "/cancel"):
+		s.cancelRun(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/searches":
 		s.createSearch(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/searches":
@@ -227,6 +229,16 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	run := s.store.CreateRun(config)
 	s.store.AddMonitoring(run.ID, s.monitor.Sample())
 	writeJSON(w, http.StatusCreated, run)
+}
+
+func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/runs/"), "/cancel")
+	run, ok := s.store.CancelRun(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 func applyWorkloadDefaults(config *core.RunConfig) {

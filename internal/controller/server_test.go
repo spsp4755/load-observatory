@@ -130,6 +130,22 @@ func TestCancelSearchCancelsRunningStep(t *testing.T) {
 	}
 }
 
+func TestCancelRunCancelsOnlyTheRequestedRun(t *testing.T) {
+	memory := store.NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
+	run := memory.CreateRun(core.RunConfig{TargetID: target.ID, Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1})
+	other := memory.CreateRun(core.RunConfig{TargetID: target.ID, Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1})
+	server := NewServer(memory)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/runs/"+run.ID+"/cancel", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"status":"cancelled"`)) {
+		t.Fatalf("cancel: %d %s", response.Code, response.Body.String())
+	}
+	if got, _ := memory.GetRun(other.ID); got.Status != "queued" {
+		t.Fatalf("unrelated run changed: %+v", got)
+	}
+}
+
 func TestListTargetsRedactsAPIKey(t *testing.T) {
 	server := NewServer(store.NewMemoryStore())
 	server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewBufferString(`{"name":"saved","type":"model","url":"http://10.0.0.1:8000/v1/chat/completions","model":"qwen","api_key":"secret"}`)))

@@ -11,6 +11,7 @@ export const createTarget = (target) => request("/api/targets", { method: "POST"
 export const listTargets = () => request("/api/targets");
 export const deleteTarget = (id) => request(`/api/targets/${id}`, { method: "DELETE" });
 export const createRun = (run) => request("/api/runs", { method: "POST", body: JSON.stringify(run) });
+export const cancelRun = (id) => request(`/api/runs/${id}/cancel`, { method: "POST" });
 export const getRun = (id) => request(`/api/runs/${id}`);
 export const listRuns = () => request("/api/runs");
 export const getHealth = () => request("/api/health");
