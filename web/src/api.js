@@ -10,6 +10,7 @@ async function request(path, options = {}) {
 export const createTarget = (target) => request("/api/targets", { method: "POST", body: JSON.stringify(target) });
 export const listTargets = () => request("/api/targets");
 export const deleteTarget = (id) => request(`/api/targets/${id}`, { method: "DELETE" });
+export const checkTarget = (id) => request(`/api/targets/${id}/check`, { method: "POST" });
 export const createRun = (run) => request("/api/runs", { method: "POST", body: JSON.stringify(run) });
 export const cancelRun = (id) => request(`/api/runs/${id}/cancel`, { method: "POST" });
 export const getRun = (id) => request(`/api/runs/${id}`);

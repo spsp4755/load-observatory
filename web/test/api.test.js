@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cancelRun, createRun, listTargets } from "../src/api.js";
+import { cancelRun, checkTarget, createRun, listTargets } from "../src/api.js";
 
 test("createRun posts the selected VU configuration", async () => {
   const originalFetch = global.fetch;
@@ -36,5 +36,18 @@ test("cancelRun posts only the selected run cancellation endpoint", async () => 
   assert.equal(request.url, "/api/runs/run-1/cancel");
   assert.equal(request.options.method, "POST");
   assert.equal(run.status, "cancelled");
+  global.fetch = originalFetch;
+});
+
+test("checkTarget posts only the selected target check endpoint", async () => {
+  const originalFetch = global.fetch;
+  let request;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ ok: true, status_code: 200 }), { status: 200 });
+  };
+  assert.equal((await checkTarget("target-1")).ok, true);
+  assert.equal(request.url, "/api/targets/target-1/check");
+  assert.equal(request.options.method, "POST");
   global.fetch = originalFetch;
 });

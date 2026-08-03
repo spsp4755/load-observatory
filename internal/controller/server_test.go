@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -164,5 +165,26 @@ func TestDeleteTargetReferencedByActiveRunReturnsConflict(t *testing.T) {
 	NewServer(memory).ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/targets/"+target.ID, nil))
 	if response.Code != http.StatusConflict {
 		t.Fatalf("got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCheckTargetUsesSavedModelAndAPIKey(t *testing.T) {
+	checked := false
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		checked = payload.Model == "qwen" && payload.MaxTokens == 1 && r.Header.Get("Authorization") == "Bearer saved-key"
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer targetServer.Close()
+	memory := store.NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "model", Type: core.TargetTypeModel, URL: targetServer.URL, Model: "qwen", APIKey: "saved-key"})
+	response := httptest.NewRecorder()
+	NewServer(memory).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/targets/"+target.ID+"/check", nil))
+	if response.Code != http.StatusOK || !checked || !bytes.Contains(response.Body.Bytes(), []byte(`"ok":true`)) {
+		t.Fatalf("check: %d %s checked=%t", response.Code, response.Body.String(), checked)
 	}
 }

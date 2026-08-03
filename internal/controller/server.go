@@ -1,9 +1,12 @@
 package controller
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/spsp4755/load-observatory/internal/core"
 	"github.com/spsp4755/load-observatory/internal/monitor"
@@ -26,6 +29,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.createTarget(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/targets":
 		s.listTargets(w)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/targets/") && strings.HasSuffix(r.URL.Path, "/check"):
+		s.checkTarget(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/targets/"):
 		s.deleteTarget(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/runs":
@@ -180,6 +185,45 @@ func (s *Server) listTargets(w http.ResponseWriter) {
 		targets[i] = publicTarget(targets[i])
 	}
 	writeJSON(w, http.StatusOK, targets)
+}
+
+func (s *Server) checkTarget(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/targets/"), "/check")
+	target, ok := s.store.GetTarget(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	method, body := http.MethodGet, bytes.NewReader(nil)
+	if target.Type == core.TargetTypeModel {
+		payload, _ := json.Marshal(map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}}, "max_tokens": 1, "stream": false})
+		method, body = http.MethodPost, bytes.NewReader(payload)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, target.URL, body)
+	if err != nil {
+		http.Error(w, "invalid target request", http.StatusBadRequest)
+		return
+	}
+	if method == http.MethodPost {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if target.APIKey != "" {
+		request.Header.Set("Authorization", "Bearer "+target.APIKey)
+	}
+	started := time.Now()
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		http.Error(w, "target connection failed", http.StatusBadGateway)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusBadRequest {
+		http.Error(w, "target returned "+response.Status, http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status_code": response.StatusCode, "latency_millis": time.Since(started).Milliseconds()})
 }
 
 func (s *Server) deleteTarget(w http.ResponseWriter, r *http.Request) {
