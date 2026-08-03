@@ -19,6 +19,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.createTarget(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/runs":
 		s.createRun(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/searches":
+		s.createSearch(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/searches":
+		writeJSON(w, http.StatusOK, s.store.ListSearches())
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/searches/"):
+		s.getSearch(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/searches/") && strings.HasSuffix(r.URL.Path, "/cancel"):
+		s.cancelSearch(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/runs":
 		writeJSON(w, http.StatusOK, s.store.ListRuns())
 	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
@@ -59,7 +67,66 @@ func (s *Server) completeRun(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.store.AdvanceSearch(id)
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
+	var config core.AutoSearchConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if _, ok := s.store.GetTarget(config.Run.TargetID); !ok {
+		http.Error(w, "target not found", http.StatusNotFound)
+		return
+	}
+	if config.Run.MaxTokens == 0 {
+		config.Run.MaxTokens = 4096
+	}
+	if config.Run.MaxErrorPercent == 0 {
+		config.Run.MaxErrorPercent = 2
+	}
+	if config.Run.MaxP95Millis == 0 {
+		config.Run.MaxP95Millis = 2000
+	}
+	if config.StartLoad == 0 {
+		if config.Run.Mode == core.LoadModeRPS {
+			config.StartLoad = 10
+		} else {
+			config.StartLoad = 5
+		}
+	}
+	if config.Run.Mode == core.LoadModeRPS {
+		config.Run.RPS = config.StartLoad
+	} else {
+		config.Run.VUs = config.StartLoad
+	}
+	if err := core.ValidateAutoSearchConfig(config); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusCreated, s.store.CreateSearch(config))
+}
+
+func (s *Server) getSearch(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/searches/")
+	search, ok := s.store.GetSearch(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, search)
+}
+
+func (s *Server) cancelSearch(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/searches/"), "/cancel")
+	search, ok := s.store.CancelSearch(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, search)
 }
 
 func (s *Server) createTarget(w http.ResponseWriter, r *http.Request) {

@@ -4,3 +4,7 @@ export function toRunConfig({ targetId, mode, vus, rps, duration, prompt, maxTok
   else config.vus = Number(vus);
   return config;
 }
+
+export function toSearchConfig(form) {
+	return { run: toRunConfig({ ...form, targetId: form.targetId }), start_load: Number(form.startLoad), max_load: Number(form.maxLoad) };
+}

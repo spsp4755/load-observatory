@@ -70,3 +70,36 @@ func TestListRunsReturnsCreatedRun(t *testing.T) {
 		t.Fatalf("unexpected runs: %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestSearchSchedulesNextStepAfterStableResult(t *testing.T) {
+	memory := store.NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
+	server := NewServer(memory)
+	create := httptest.NewRecorder()
+	server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/searches", bytes.NewBufferString(`{"run":{"target_id":"`+target.ID+`","mode":"vu","duration_seconds":1,"max_tokens":32,"max_error_percent":2,"max_p95_millis":2000},"start_load":5,"max_load":10}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create search: %d %s", create.Code, create.Body.String())
+	}
+	claim := httptest.NewRecorder()
+	server.ServeHTTP(claim, httptest.NewRequest(http.MethodPost, "/api/agent/claim", nil))
+	if claim.Code != http.StatusOK || !bytes.Contains(claim.Body.Bytes(), []byte(`"vus":5`)) {
+		t.Fatalf("claim: %d %s", claim.Code, claim.Body.String())
+	}
+	result := httptest.NewRecorder()
+	server.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/agent/runs/run-3/result", bytes.NewBufferString(`{"total":10,"successes":10,"latency":{"p95_millis":100}}`)))
+	if result.Code != http.StatusOK {
+		t.Fatalf("result: %d", result.Code)
+	}
+	searches := httptest.NewRecorder()
+	server.ServeHTTP(searches, httptest.NewRequest(http.MethodGet, "/api/searches", nil))
+	if searches.Code != http.StatusOK || !bytes.Contains(searches.Body.Bytes(), []byte(`"next_load":10`)) {
+		t.Fatalf("search: %d %s", searches.Code, searches.Body.String())
+	}
+}
+
+func TestCancelSearchCancelsQueuedStep(t *testing.T) {
+	memory := store.NewMemoryStore(); target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"}); server := NewServer(memory)
+	create := httptest.NewRecorder(); server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/searches", bytes.NewBufferString(`{"run":{"target_id":"`+target.ID+`","mode":"vu","duration_seconds":1,"max_tokens":32},"start_load":5,"max_load":10}`)))
+	cancel := httptest.NewRecorder(); server.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/api/searches/search-2/cancel", nil))
+	if cancel.Code != http.StatusOK || !bytes.Contains(cancel.Body.Bytes(), []byte(`"status":"cancelled"`)) { t.Fatalf("cancel: %d %s", cancel.Code, cancel.Body.String()) }
+}

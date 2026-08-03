@@ -87,6 +87,32 @@ type Run struct {
 	Result RunResult `json:"result"`
 }
 
+type AutoSearchStatus string
+
+const (
+	AutoSearchRunning   AutoSearchStatus = "running"
+	AutoSearchCompleted AutoSearchStatus = "completed"
+	AutoSearchCancelled AutoSearchStatus = "cancelled"
+)
+
+type AutoSearchConfig struct {
+	Run       RunConfig `json:"run"`
+	StartLoad int       `json:"start_load"`
+	MaxLoad   int       `json:"max_load"`
+}
+
+type AutoSearch struct {
+	ID              string           `json:"id"`
+	Status          AutoSearchStatus `json:"status"`
+	Config          AutoSearchConfig `json:"config"`
+	RunIDs          []string         `json:"run_ids"`
+	NextLoad        int              `json:"next_load"`
+	StableLoad      int              `json:"stable_load"`
+	FailedLoad      int              `json:"failed_load"`
+	RecommendedLoad int              `json:"recommended_load"`
+	Message         string           `json:"message"`
+}
+
 type Assignment struct {
 	Run    Run    `json:"run"`
 	Target Target `json:"target"`

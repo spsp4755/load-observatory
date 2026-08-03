@@ -12,3 +12,6 @@ export const createRun = (run) => request("/api/runs", { method: "POST", body: J
 export const getRun = (id) => request(`/api/runs/${id}`);
 export const listRuns = () => request("/api/runs");
 export const getHealth = () => request("/api/health");
+export const createSearch = (search) => request("/api/searches", { method: "POST", body: JSON.stringify(search) });
+export const getSearch = (id) => request(`/api/searches/${id}`);
+export const cancelSearch = (id) => request(`/api/searches/${id}/cancel`, { method: "POST" });
