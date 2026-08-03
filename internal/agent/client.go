@@ -14,14 +14,8 @@ import (
 
 func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 	baseURL := strings.TrimSuffix(controllerURL, "/")
-	heartbeat, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/agent/heartbeat", nil)
-	if err != nil {
+	if err := sendHeartbeat(ctx, baseURL); err != nil {
 		return false, err
-	}
-	if response, err := http.DefaultClient.Do(heartbeat); err != nil {
-		return false, err
-	} else {
-		_ = response.Body.Close()
 	}
 	claim, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/agent/claim", nil)
 	if err != nil {
@@ -49,9 +43,12 @@ func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan struct{})
+	heartbeatDone := make(chan struct{})
 	go watchCancellation(runCtx, baseURL, assignment.Run.ID, cancel, done)
+	go keepHeartbeat(runCtx, baseURL, heartbeatDone)
 	resultBody, err := json.Marshal(RunTarget(runCtx, assignment.Target, assignment.Run.Config))
 	close(done)
+	close(heartbeatDone)
 	if err != nil {
 		return false, err
 	}
@@ -69,6 +66,34 @@ func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 		return false, fmt.Errorf("report result: HTTP %d", response.StatusCode)
 	}
 	return true, nil
+}
+
+func sendHeartbeat(ctx context.Context, baseURL string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/agent/heartbeat", nil)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	_ = response.Body.Close()
+	return nil
+}
+
+func keepHeartbeat(ctx context.Context, baseURL string, done <-chan struct{}) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			_ = sendHeartbeat(ctx, baseURL)
+		}
+	}
 }
 
 func watchCancellation(ctx context.Context, baseURL, runID string, cancel context.CancelFunc, done <-chan struct{}) {

@@ -108,6 +108,11 @@ func TestCancelSearchCancelsQueuedStep(t *testing.T) {
 	if cancel.Code != http.StatusOK || !bytes.Contains(cancel.Body.Bytes(), []byte(`"status":"cancelled"`)) {
 		t.Fatalf("cancel: %d %s", cancel.Code, cancel.Body.String())
 	}
+	claim := httptest.NewRecorder()
+	server.ServeHTTP(claim, httptest.NewRequest(http.MethodPost, "/api/agent/claim", nil))
+	if claim.Code != http.StatusNoContent {
+		t.Fatalf("cancelled search was claimed: %d %s", claim.Code, claim.Body.String())
+	}
 }
 
 func TestCancelSearchCancelsRunningStep(t *testing.T) {
@@ -132,5 +137,16 @@ func TestListTargetsRedactsAPIKey(t *testing.T) {
 	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/targets", nil))
 	if response.Code != http.StatusOK || bytes.Contains(response.Body.Bytes(), []byte("secret")) || !bytes.Contains(response.Body.Bytes(), []byte(`"has_api_key":true`)) {
 		t.Fatalf("API key leaked in target list: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDeleteTargetReferencedByActiveRunReturnsConflict(t *testing.T) {
+	memory := store.NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "model", Type: core.TargetTypeModel, URL: "http://10.0.0.10/v1/chat/completions", Model: "model"})
+	memory.CreateRun(core.RunConfig{TargetID: target.ID, Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1})
+	response := httptest.NewRecorder()
+	NewServer(memory).ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/targets/"+target.ID, nil))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("got %d: %s", response.Code, response.Body.String())
 	}
 }

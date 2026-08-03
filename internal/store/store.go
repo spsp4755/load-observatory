@@ -13,7 +13,7 @@ type Store interface {
 	CreateTarget(core.Target) core.Target
 	GetTarget(string) (core.Target, bool)
 	ListTargets() []core.Target
-	DeleteTarget(string) bool
+	DeleteTarget(string) DeleteTargetResult
 	CreateRun(core.RunConfig) core.Run
 	GetRun(string) (core.Run, bool)
 	ListRuns() []core.Run
@@ -29,6 +29,14 @@ type Store interface {
 	CancelSearch(string) (core.AutoSearch, bool)
 	AdvanceSearch(string)
 }
+
+type DeleteTargetResult int
+
+const (
+	TargetDeleted DeleteTargetResult = iota
+	TargetNotFound
+	TargetInUse
+)
 
 type MemoryStore struct {
 	mu           sync.RWMutex
@@ -238,14 +246,19 @@ func (s *MemoryStore) ListTargets() []core.Target {
 	return targets
 }
 
-func (s *MemoryStore) DeleteTarget(id string) bool {
+func (s *MemoryStore) DeleteTarget(id string) DeleteTargetResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.targets[id]; !ok {
-		return false
+		return TargetNotFound
+	}
+	for _, run := range s.runs {
+		if run.Config.TargetID == id && (run.Status == "queued" || run.Status == "running") {
+			return TargetInUse
+		}
 	}
 	delete(s.targets, id)
-	return true
+	return TargetDeleted
 }
 
 func (s *MemoryStore) CreateRun(config core.RunConfig) core.Run {
@@ -286,8 +299,17 @@ func (s *MemoryStore) ClaimRun() (core.Assignment, bool) {
 			continue
 		}
 		run := s.runs[shard.RunID]
+		if run.Status != "queued" && run.Status != "running" {
+			shard.Status = "cancelled"
+			s.shards[shardID] = shard
+			continue
+		}
 		target, ok := s.targets[run.Config.TargetID]
 		if !ok {
+			run.Status = "cancelled"
+			s.runs[run.ID] = run
+			shard.Status = "cancelled"
+			s.shards[shardID] = shard
 			continue
 		}
 		shard.Status = "running"
