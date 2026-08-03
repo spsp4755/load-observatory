@@ -124,6 +124,9 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	if method == http.MethodPost {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	if target.APIKey != "" {
+		request.Header.Set("Authorization", "Bearer "+target.APIKey)
+	}
 	response, err := client.Do(request)
 	ttft := time.Since(started).Milliseconds()
 	if err != nil {

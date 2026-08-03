@@ -12,6 +12,8 @@ import (
 type Store interface {
 	CreateTarget(core.Target) core.Target
 	GetTarget(string) (core.Target, bool)
+	ListTargets() []core.Target
+	DeleteTarget(string) bool
 	CreateRun(core.RunConfig) core.Run
 	GetRun(string) (core.Run, bool)
 	ListRuns() []core.Run
@@ -207,6 +209,26 @@ func (s *MemoryStore) GetTarget(id string) (core.Target, bool) {
 	defer s.mu.RUnlock()
 	target, ok := s.targets[id]
 	return target, ok
+}
+
+func (s *MemoryStore) ListTargets() []core.Target {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	targets := make([]core.Target, 0, len(s.targets))
+	for _, target := range s.targets {
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func (s *MemoryStore) DeleteTarget(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.targets[id]; !ok {
+		return false
+	}
+	delete(s.targets, id)
+	return true
 }
 
 func (s *MemoryStore) CreateRun(config core.RunConfig) core.Run {

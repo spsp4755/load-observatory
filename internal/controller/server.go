@@ -17,6 +17,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/api/targets":
 		s.createTarget(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/targets":
+		s.listTargets(w)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/targets/"):
+		s.deleteTarget(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/runs":
 		s.createRun(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/searches":
@@ -148,8 +152,26 @@ func (s *Server) createTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.store.CreateTarget(target))
+	writeJSON(w, http.StatusCreated, publicTarget(s.store.CreateTarget(target)))
 }
+
+func (s *Server) listTargets(w http.ResponseWriter) {
+	targets := s.store.ListTargets()
+	for i := range targets {
+		targets[i] = publicTarget(targets[i])
+	}
+	writeJSON(w, http.StatusOK, targets)
+}
+
+func (s *Server) deleteTarget(w http.ResponseWriter, r *http.Request) {
+	if !s.store.DeleteTarget(strings.TrimPrefix(r.URL.Path, "/api/targets/")) {
+		http.NotFound(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func publicTarget(target core.Target) core.Target { target.APIKey = ""; return target }
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var config core.RunConfig

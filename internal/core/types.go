@@ -30,11 +30,12 @@ const (
 )
 
 type Target struct {
-	ID    string     `json:"id"`
-	Name  string     `json:"name"`
-	Type  TargetType `json:"type"`
-	URL   string     `json:"url"`
-	Model string     `json:"model,omitempty"`
+	ID     string     `json:"id"`
+	Name   string     `json:"name"`
+	Type   TargetType `json:"type"`
+	URL    string     `json:"url"`
+	Model  string     `json:"model,omitempty"`
+	APIKey string     `json:"api_key,omitempty"`
 }
 
 type RunConfig struct {

@@ -85,6 +85,19 @@ func TestRunTargetBypassesWebCacheWithWorkloadQuery(t *testing.T) {
 	}
 }
 
+func TestRunTargetSendsTargetAPIKey(t *testing.T) {
+	keys := make(chan string, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model", APIKey: "test-key"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, MaxTokens: 1})
+	if key := <-keys; key != "Bearer test-key" {
+		t.Fatalf("got authorization %q", key)
+	}
+}
+
 func TestRunTargetCollectsDetailedMetricsAndUsage(t *testing.T) {
 	requests := 0
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

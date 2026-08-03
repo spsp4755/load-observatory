@@ -48,6 +48,14 @@ func (s *PostgresStore) CreateTarget(v core.Target) core.Target {
 	return r
 }
 func (s *PostgresStore) GetTarget(v string) (core.Target, bool) { return s.memory.GetTarget(v) }
+func (s *PostgresStore) ListTargets() []core.Target             { return s.memory.ListTargets() }
+func (s *PostgresStore) DeleteTarget(v string) bool {
+	ok := s.memory.DeleteTarget(v)
+	if ok {
+		s.persist()
+	}
+	return ok
+}
 func (s *PostgresStore) CreateRun(v core.RunConfig) core.Run {
 	r := s.memory.CreateRun(v)
 	s.persist()
