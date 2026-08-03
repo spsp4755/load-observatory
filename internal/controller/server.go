@@ -19,6 +19,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.createTarget(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/runs":
 		s.createRun(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/runs":
+		writeJSON(w, http.StatusOK, s.store.ListRuns())
+	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
+		queued, running, agentOnline := s.store.Health()
+		writeJSON(w, http.StatusOK, map[string]any{"controller_online": true, "agent_online": agentOnline, "queued_runs": queued, "running_runs": running})
+	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/heartbeat":
+		s.store.TouchAgent()
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/claim":
 		s.claimRun(w)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/result"):
@@ -32,7 +40,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) claimRun(w http.ResponseWriter) {
 	assignment, ok := s.store.ClaimRun()
-	if !ok { w.WriteHeader(http.StatusNoContent); return }
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	writeJSON(w, http.StatusOK, assignment)
 }
 
@@ -44,7 +55,10 @@ func (s *Server) completeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run, ok := s.store.CompleteRun(id, result)
-	if !ok { http.NotFound(w, r); return }
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -79,6 +93,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "target not found", http.StatusNotFound)
 		return
 	}
+	if config.MaxTokens == 0 {
+		config.MaxTokens = 4096
+	}
 	if err := core.ValidateRunConfig(config); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -89,7 +106,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/runs/")
 	run, ok := s.store.GetRun(id)
-	if !ok { http.NotFound(w, r); return }
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	writeJSON(w, http.StatusOK, run)
 }
 

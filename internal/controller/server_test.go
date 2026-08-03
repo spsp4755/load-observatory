@@ -34,7 +34,9 @@ func TestCreateModelTargetRequiresModelName(t *testing.T) {
 
 	server.ServeHTTP(response, request)
 
-	if response.Code != http.StatusBadRequest { t.Fatalf("got %d", response.Code) }
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("got %d", response.Code)
+	}
 }
 
 func TestAgentClaimAndResultCompleteRun(t *testing.T) {
@@ -53,5 +55,15 @@ func TestAgentClaimAndResultCompleteRun(t *testing.T) {
 	server.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/agent/runs/"+run.ID+"/result", bytes.NewBufferString(`{"successes":1}`)))
 	if result.Code != http.StatusOK || !bytes.Contains(result.Body.Bytes(), []byte(`"status":"completed"`)) {
 		t.Fatalf("unexpected result: %d %s", result.Code, result.Body.String())
+	}
+}
+
+func TestListRunsReturnsCreatedRun(t *testing.T) {
+	memory := store.NewMemoryStore()
+	memory.CreateRun(core.RunConfig{TargetID: "target-1", Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1})
+	response := httptest.NewRecorder()
+	NewServer(memory).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/runs", nil))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"status":"queued"`)) {
+		t.Fatalf("unexpected runs: %d %s", response.Code, response.Body.String())
 	}
 }

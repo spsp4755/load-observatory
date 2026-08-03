@@ -10,3 +10,5 @@ async function request(path, options = {}) {
 export const createTarget = (target) => request("/api/targets", { method: "POST", body: JSON.stringify(target) });
 export const createRun = (run) => request("/api/runs", { method: "POST", body: JSON.stringify(run) });
 export const getRun = (id) => request(`/api/runs/${id}`);
+export const listRuns = () => request("/api/runs");
+export const getHealth = () => request("/api/health");

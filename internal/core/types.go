@@ -4,6 +4,7 @@ const (
 	MaxVUs             = 500
 	MaxRPS             = 2000
 	MaxDurationSeconds = 60 * 60
+	MaxModelTokens     = 32768
 )
 
 type LoadMode string
@@ -21,10 +22,10 @@ const (
 )
 
 type Target struct {
-	ID   string     `json:"id"`
-	Name string     `json:"name"`
-	Type TargetType `json:"type"`
-	URL  string     `json:"url"`
+	ID    string     `json:"id"`
+	Name  string     `json:"name"`
+	Type  TargetType `json:"type"`
+	URL   string     `json:"url"`
 	Model string     `json:"model,omitempty"`
 }
 
@@ -34,6 +35,8 @@ type RunConfig struct {
 	VUs             int      `json:"vus"`
 	RPS             int      `json:"rps"`
 	DurationSeconds int      `json:"duration_seconds"`
+	Prompt          string   `json:"prompt"`
+	MaxTokens       int      `json:"max_tokens"`
 }
 
 type RunResult struct {

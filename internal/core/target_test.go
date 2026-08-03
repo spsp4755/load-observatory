@@ -20,3 +20,10 @@ func TestValidateRunConfigRejectsTooManyVUs(t *testing.T) {
 		t.Fatal("VU limit missing")
 	}
 }
+
+func TestValidateRunConfigRejectsTooManyModelTokens(t *testing.T) {
+	err := ValidateRunConfig(RunConfig{Mode: LoadModeVU, VUs: 1, DurationSeconds: 1, MaxTokens: MaxModelTokens + 1})
+	if err == nil {
+		t.Fatal("expected max token validation error")
+	}
+}

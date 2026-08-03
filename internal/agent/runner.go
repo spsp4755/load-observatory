@@ -33,20 +33,20 @@ func RunTarget(ctx context.Context, target core.Target, config core.RunConfig) c
 	m := &measurements{}
 	client := &http.Client{}
 	if config.Mode == core.LoadModeRPS {
-		runRPS(ctx, client, target, config.RPS, m)
+		runRPS(ctx, client, target, config, m)
 	} else {
 		var workers sync.WaitGroup
 		for range config.VUs {
 			workers.Add(1)
-			go func() { defer workers.Done(); runWorker(ctx, client, target, m) }()
+			go func() { defer workers.Done(); runWorker(ctx, client, target, config, m) }()
 		}
 		workers.Wait()
 	}
 	return m.result()
 }
 
-func runRPS(ctx context.Context, client *http.Client, target core.Target, rps int, m *measurements) {
-	interval := time.Second / time.Duration(rps)
+func runRPS(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+	interval := time.Second / time.Duration(config.RPS)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var workers sync.WaitGroup
@@ -57,48 +57,61 @@ func runRPS(ctx context.Context, client *http.Client, target core.Target, rps in
 			return
 		case <-ticker.C:
 			workers.Add(1)
-			go func() { defer workers.Done(); doRequest(ctx, client, target, m) }()
+			go func() { defer workers.Done(); doRequest(ctx, client, target, config, m) }()
 		}
 	}
 }
 
-func runWorker(ctx context.Context, client *http.Client, target core.Target, m *measurements) {
+func runWorker(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
 	for ctx.Err() == nil {
-		doRequest(ctx, client, target, m)
+		doRequest(ctx, client, target, config, m)
 	}
 }
 
-func doRequest(ctx context.Context, client *http.Client, target core.Target, m *measurements) {
+func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
 	started := time.Now()
 	method, body := http.MethodGet, io.Reader(nil)
 	if target.Type == core.TargetTypeModel || strings.HasSuffix(target.URL, "/v1/chat/completions") {
 		method = http.MethodPost
 		payload, err := json.Marshal(struct {
-			Model string `json:"model"`
+			Model    string `json:"model"`
 			Messages []struct {
-				Role string `json:"role"`
+				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
 			MaxTokens int `json:"max_tokens"`
 		}{Model: target.Model, Messages: []struct {
-			Role string `json:"role"`
+			Role    string `json:"role"`
 			Content string `json:"content"`
-		}{{Role: "user", Content: "load test"}}, MaxTokens: 8})
-		if err != nil { m.recordFailure(); return }
+		}{{Role: "user", Content: config.Prompt}}, MaxTokens: config.MaxTokens})
+		if err != nil {
+			m.recordFailure()
+			return
+		}
 		body = bytes.NewReader(payload)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target.URL, body)
-	if err != nil { m.recordFailure(); return }
-	if method == http.MethodPost { request.Header.Set("Content-Type", "application/json") }
+	if err != nil {
+		m.recordFailure()
+		return
+	}
+	if method == http.MethodPost {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := client.Do(request)
 	ttft := time.Since(started).Milliseconds()
 	if err != nil {
-		if ctx.Err() == nil { m.recordFailure() }
+		if ctx.Err() == nil {
+			m.recordFailure()
+		}
 		return
 	}
 	_, _ = io.Copy(io.Discard, response.Body)
 	_ = response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 400 { m.recordFailure(); return }
+	if response.StatusCode < 200 || response.StatusCode >= 400 {
+		m.recordFailure()
+		return
+	}
 	m.recordSuccess(time.Since(started).Milliseconds(), ttft)
 }
 
@@ -119,7 +132,9 @@ func (m *measurements) result() core.RunResult {
 }
 
 func p95(values []int64) int64 {
-	if len(values) == 0 { return 0 }
+	if len(values) == 0 {
+		return 0
+	}
 	copyValues := append([]int64(nil), values...)
 	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i] < copyValues[j] })
 	return copyValues[(len(copyValues)*95+99)/100-1]

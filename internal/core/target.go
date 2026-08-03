@@ -48,5 +48,8 @@ func ValidateRunConfig(config RunConfig) error {
 	default:
 		return errors.New("mode must be vu or rps")
 	}
+	if config.MaxTokens < 1 || config.MaxTokens > MaxModelTokens {
+		return errors.New("max_tokens must be between 1 and 32768")
+	}
 	return nil
 }

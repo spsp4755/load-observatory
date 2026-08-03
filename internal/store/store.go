@@ -3,15 +3,44 @@ package store
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/spsp4755/load-observatory/internal/core"
 )
 
 type MemoryStore struct {
-	mu      sync.RWMutex
-	nextID  int
-	targets map[string]core.Target
-	runs    map[string]core.Run
+	mu        sync.RWMutex
+	nextID    int
+	targets   map[string]core.Target
+	runs      map[string]core.Run
+	agentSeen time.Time
+}
+
+func (s *MemoryStore) ListRuns() []core.Run {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	runs := make([]core.Run, 0, len(s.runs))
+	for _, run := range s.runs {
+		runs = append(runs, run)
+	}
+	return runs
+}
+
+func (s *MemoryStore) TouchAgent() { s.mu.Lock(); defer s.mu.Unlock(); s.agentSeen = time.Now() }
+
+func (s *MemoryStore) Health() (int, int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	queued, running := 0, 0
+	for _, run := range s.runs {
+		if run.Status == "queued" {
+			queued++
+		}
+		if run.Status == "running" {
+			running++
+		}
+	}
+	return queued, running, time.Since(s.agentSeen) < 5*time.Second
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -54,9 +83,13 @@ func (s *MemoryStore) ClaimRun() (core.Assignment, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, run := range s.runs {
-		if run.Status != "queued" { continue }
+		if run.Status != "queued" {
+			continue
+		}
 		target, ok := s.targets[run.Config.TargetID]
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 		run.Status = "running"
 		s.runs[id] = run
 		return core.Assignment{Run: run, Target: target}, true
@@ -68,7 +101,9 @@ func (s *MemoryStore) CompleteRun(id string, result core.RunResult) (core.Run, b
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run, ok := s.runs[id]
-	if !ok { return core.Run{}, false }
+	if !ok {
+		return core.Run{}, false
+	}
 	run.Status = "completed"
 	run.Result = result
 	s.runs[id] = run
