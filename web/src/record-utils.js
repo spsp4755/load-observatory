@@ -24,6 +24,6 @@ export function sortRuns(runs, sort) {
 }
 
 export function compareRuns(left, right) {
-  const value = (run, key) => key === "load" ? (run.config.mode === "rps" ? run.config.rps : run.config.vus) : key === "p95" ? (run.result?.latency?.p95_millis ?? run.result?.p95_millis ?? 0) : run.result?.[key] || 0;
-  return ["load", "successes", "failures", "throughput_rps", "p95"].map((key) => ({ key, left: value(left, key), right: value(right, key), delta: value(right, key) - value(left, key) }));
+  const value = (run, key) => key === "load" ? (run.config.mode === "rps" ? run.config.rps : run.config.vus) : key === "p95" ? (run.result?.latency?.p95_millis ?? run.result?.p95_millis ?? 0) : key === "output_per_second" ? (run.result?.tokens?.output_per_second || 0) : run.result?.[key] || 0;
+  return ["load", "successes", "failures", "throughput_rps", "output_per_second", "p95"].map((key) => ({ key, left: value(left, key), right: value(right, key), delta: value(right, key) - value(left, key) }));
 }
