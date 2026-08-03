@@ -25,6 +25,9 @@ func TestCreateRunReturnsQueuedRun(t *testing.T) {
 	if got := response.Body.String(); !bytes.Contains([]byte(got), []byte(`"status":"queued"`)) {
 		t.Fatalf("expected queued run, got %s", got)
 	}
+	if got := response.Body.String(); !bytes.Contains([]byte(got), []byte(`"max_error_percent":2`)) || !bytes.Contains([]byte(got), []byte(`"max_p95_millis":2000`)) {
+		t.Fatalf("threshold defaults missing: %s", got)
+	}
 }
 
 func TestCreateModelTargetRequiresModelName(t *testing.T) {

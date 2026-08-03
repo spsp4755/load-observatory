@@ -51,6 +51,22 @@ func TestRunTargetSendsSelectedModel(t *testing.T) {
 	}
 }
 
+func TestRunTargetCollectsDetailedMetricsAndUsage(t *testing.T) {
+	requests := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests%2 == 0 { http.Error(w, "busy", http.StatusServiceUnavailable); return }
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":4,"completion_tokens":12,"completion_tokens_details":{"reasoning_tokens":3}}}`))
+	}))
+	defer target.Close()
+
+	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, Prompt: "test", MaxTokens: 32})
+	if result.Total == 0 || result.Latency.P95Millis < 0 || result.Tokens.Completion == 0 || result.StatusCounts["503"] == 0 || len(result.Timeline) == 0 {
+		t.Fatalf("unexpected detailed result: %+v", result)
+	}
+}
+
 func TestRunDoesNotCountDeadlineCancellationAsFailure(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()

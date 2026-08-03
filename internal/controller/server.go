@@ -96,6 +96,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if config.MaxTokens == 0 {
 		config.MaxTokens = 4096
 	}
+	if config.MaxErrorPercent == 0 {
+		config.MaxErrorPercent = 2
+	}
+	if config.MaxP95Millis == 0 {
+		config.MaxP95Millis = 2000
+	}
 	if err := core.ValidateRunConfig(config); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
