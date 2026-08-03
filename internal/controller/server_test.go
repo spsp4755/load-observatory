@@ -82,7 +82,7 @@ func TestSearchSchedulesNextStepAfterStableResult(t *testing.T) {
 	}
 	claim := httptest.NewRecorder()
 	server.ServeHTTP(claim, httptest.NewRequest(http.MethodPost, "/api/agent/claim", nil))
-	if claim.Code != http.StatusOK || !bytes.Contains(claim.Body.Bytes(), []byte(`"vus":5`)) {
+	if claim.Code != http.StatusOK || !bytes.Contains(claim.Body.Bytes(), []byte(`"vus":5`)) || !bytes.Contains(claim.Body.Bytes(), []byte(`"search_id":"search-2"`)) {
 		t.Fatalf("claim: %d %s", claim.Code, claim.Body.String())
 	}
 	result := httptest.NewRecorder()
@@ -98,8 +98,14 @@ func TestSearchSchedulesNextStepAfterStableResult(t *testing.T) {
 }
 
 func TestCancelSearchCancelsQueuedStep(t *testing.T) {
-	memory := store.NewMemoryStore(); target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"}); server := NewServer(memory)
-	create := httptest.NewRecorder(); server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/searches", bytes.NewBufferString(`{"run":{"target_id":"`+target.ID+`","mode":"vu","duration_seconds":1,"max_tokens":32},"start_load":5,"max_load":10}`)))
-	cancel := httptest.NewRecorder(); server.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/api/searches/search-2/cancel", nil))
-	if cancel.Code != http.StatusOK || !bytes.Contains(cancel.Body.Bytes(), []byte(`"status":"cancelled"`)) { t.Fatalf("cancel: %d %s", cancel.Code, cancel.Body.String()) }
+	memory := store.NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
+	server := NewServer(memory)
+	create := httptest.NewRecorder()
+	server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/searches", bytes.NewBufferString(`{"run":{"target_id":"`+target.ID+`","mode":"vu","duration_seconds":1,"max_tokens":32},"start_load":5,"max_load":10}`)))
+	cancel := httptest.NewRecorder()
+	server.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/api/searches/search-2/cancel", nil))
+	if cancel.Code != http.StatusOK || !bytes.Contains(cancel.Body.Bytes(), []byte(`"status":"cancelled"`)) {
+		t.Fatalf("cancel: %d %s", cancel.Code, cancel.Body.String())
+	}
 }

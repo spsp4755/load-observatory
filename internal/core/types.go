@@ -81,10 +81,11 @@ type RunResult struct {
 }
 
 type Run struct {
-	ID     string    `json:"id"`
-	Status string    `json:"status"`
-	Config RunConfig `json:"config"`
-	Result RunResult `json:"result"`
+	ID       string    `json:"id"`
+	Status   string    `json:"status"`
+	SearchID string    `json:"search_id,omitempty"`
+	Config   RunConfig `json:"config"`
+	Result   RunResult `json:"result"`
 }
 
 type AutoSearchStatus string

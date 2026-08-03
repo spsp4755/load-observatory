@@ -67,7 +67,7 @@ func (s *MemoryStore) queueSearchRunLocked(search *core.AutoSearch, load int) {
 		config.VUs = load
 	}
 	s.nextID++
-	run := core.Run{ID: fmt.Sprintf("run-%d", s.nextID), Status: "queued", Config: config}
+	run := core.Run{ID: fmt.Sprintf("run-%d", s.nextID), Status: "queued", SearchID: search.ID, Config: config}
 	s.runs[run.ID] = run
 	search.RunIDs = append(search.RunIDs, run.ID)
 	s.searchRun[run.ID] = search.ID
