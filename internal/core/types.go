@@ -30,13 +30,13 @@ const (
 )
 
 type Target struct {
-	ID     string     `json:"id"`
-	Name   string     `json:"name"`
-	Type   TargetType `json:"type"`
-	URL    string     `json:"url"`
-	Model  string     `json:"model,omitempty"`
-	APIKey string     `json:"api_key,omitempty"`
-	HasAPIKey bool    `json:"has_api_key,omitempty"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Type      TargetType `json:"type"`
+	URL       string     `json:"url"`
+	Model     string     `json:"model,omitempty"`
+	APIKey    string     `json:"api_key,omitempty"`
+	HasAPIKey bool       `json:"has_api_key,omitempty"`
 }
 
 type RunConfig struct {
@@ -94,6 +94,7 @@ type RunResult struct {
 	StatusCounts  map[string]int64 `json:"status_counts"`
 	Errors        []string         `json:"errors"`
 	Timeline      []TimelinePoint  `json:"timeline"`
+	LatencyScope  string           `json:"latency_scope,omitempty"`
 }
 
 type MonitoringSample struct {

@@ -30,7 +30,7 @@ func TestCompleteShardWaitsForAllShardResults(t *testing.T) {
 		t.Fatal("parent completed before second shard")
 	}
 	completed, ok := s.CompleteShard(second.Shard.ID, core.RunResult{Successes: 2, Total: 2})
-	if !ok || completed.Status != "completed" || completed.Result.Successes != 3 {
+	if !ok || completed.Status != "completed" || completed.Result.Successes != 3 || completed.Result.LatencyScope != "worst_shard_p95" {
 		t.Fatalf("unexpected merged run: %+v", completed)
 	}
 	_ = run

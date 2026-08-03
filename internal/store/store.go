@@ -395,6 +395,9 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		}
 	}
 	merged.P95Millis, merged.TTFTP95Millis = merged.Latency.P95Millis, merged.TTFT.P95Millis
+	if run.Config.Shards > 1 {
+		merged.LatencyScope = "worst_shard_p95"
+	}
 	if run.Config.DurationSeconds > 0 {
 		merged.ThroughputRPS = float64(merged.Total) / float64(run.Config.DurationSeconds)
 		merged.Tokens.OutputPerSecond = float64(merged.Tokens.Completion) / float64(run.Config.DurationSeconds)
