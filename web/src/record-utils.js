@@ -3,6 +3,7 @@ export const presets = {
   coding: { prompt: "Implement a production-ready Go HTTP endpoint with validation and tests.", maxTokens: "20480" },
   long: { prompt: "Provide a detailed implementation plan with code examples and edge cases.", maxTokens: "163840" },
 };
+export const policyText = (run) => run.config?.cache_policy === "bypass" ? "캐시 우회" : run.config?.cache_policy === "reuse" ? "캐시 활용" : `혼합 (${run.config?.variation_percent ?? 30}% 변형)`;
 
 export function filterRuns(runs, { query = "", status = "all", verdict = "all" }) {
   const text = query.toLowerCase();

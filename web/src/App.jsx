@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { cancelSearch, createRun, createSearch, createTarget, getHealth, getRun, getSearch, listRuns } from "./api.js";
 import { toRunConfig, toSearchConfig } from "./run-form.js";
-import { presets } from "./record-utils.js";
+import { policyText, presets } from "./record-utils.js";
 import { getVerdict, milliseconds, rate } from "./results.js";
 
 const initial = { type: "model", url: "http://model.internal:8000/v1/chat/completions", model: "", prompt: presets.coding.prompt, maxTokens: presets.coding.maxTokens, cachePolicy: "mixed", variationPercent: "30", mode: "vu", vus: "10", rps: "100", duration: "60", maxErrorPercent: "2", maxP95Millis: "2000", startLoad: "5", maxLoad: "40" };
 const Metric = ({ label, value }) => <section className="metric"><span>{label}</span><strong>{value}</strong></section>;
 const loadText = (run) => run.config.mode === "rps" ? `${run.config.rps} RPS` : `${run.config.vus} VU`;
-const policyText = (run) => run.config.cache_policy === "bypass" ? "캐시 우회" : run.config.cache_policy === "reuse" ? "캐시 활용" : `혼합 (${run.config.variation_percent}% 변형)`;
 
 function Details({ run }) {
   if (!run) return <section className="panel empty">실행 기록을 선택하면 상세 분석이 표시됩니다.</section>;
