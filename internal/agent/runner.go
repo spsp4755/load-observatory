@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"sort"
@@ -72,14 +73,29 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, m *
 	method, body := http.MethodGet, io.Reader(nil)
 	if target.Type == core.TargetTypeModel || strings.HasSuffix(target.URL, "/v1/chat/completions") {
 		method = http.MethodPost
-		body = bytes.NewBufferString(`{"messages":[{"role":"user","content":"load test"}],"max_tokens":8}`)
+		payload, err := json.Marshal(struct {
+			Model string `json:"model"`
+			Messages []struct {
+				Role string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			MaxTokens int `json:"max_tokens"`
+		}{Model: target.Model, Messages: []struct {
+			Role string `json:"role"`
+			Content string `json:"content"`
+		}{{Role: "user", Content: "load test"}}, MaxTokens: 8})
+		if err != nil { m.recordFailure(); return }
+		body = bytes.NewReader(payload)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target.URL, body)
 	if err != nil { m.recordFailure(); return }
 	if method == http.MethodPost { request.Header.Set("Content-Type", "application/json") }
 	response, err := client.Do(request)
 	ttft := time.Since(started).Milliseconds()
-	if err != nil { m.recordFailure(); return }
+	if err != nil {
+		if ctx.Err() == nil { m.recordFailure() }
+		return
+	}
 	_, _ = io.Copy(io.Discard, response.Body)
 	_ = response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 400 { m.recordFailure(); return }

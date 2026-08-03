@@ -27,6 +27,16 @@ func TestCreateRunReturnsQueuedRun(t *testing.T) {
 	}
 }
 
+func TestCreateModelTargetRequiresModelName(t *testing.T) {
+	server := NewServer(store.NewMemoryStore())
+	request := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewBufferString(`{"name":"model","type":"model","url":"http://192.168.0.249:1234/v1/chat/completions"}`))
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest { t.Fatalf("got %d", response.Code) }
+}
+
 func TestAgentClaimAndResultCompleteRun(t *testing.T) {
 	memory := store.NewMemoryStore()
 	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})

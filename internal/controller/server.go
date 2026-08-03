@@ -58,6 +58,10 @@ func (s *Server) createTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "type must be web or model", http.StatusBadRequest)
 		return
 	}
+	if target.Type == core.TargetTypeModel && target.Model == "" {
+		http.Error(w, "model name is required", http.StatusBadRequest)
+		return
+	}
 	if err := core.ValidateTarget(target.URL); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

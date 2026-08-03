@@ -25,6 +25,7 @@ type Target struct {
 	Name string     `json:"name"`
 	Type TargetType `json:"type"`
 	URL  string     `json:"url"`
+	Model string     `json:"model,omitempty"`
 }
 
 type RunConfig struct {

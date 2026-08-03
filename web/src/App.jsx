@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { createRun, createTarget, getRun } from "./api.js";
 import { toRunConfig } from "./run-form.js";
 
-const initial = { type: "model", url: "http://model.internal:8000/v1/chat/completions", mode: "vu", vus: "10", rps: "100", duration: "60" };
+const initial = { type: "model", url: "http://model.internal:8000/v1/chat/completions", model: "", mode: "vu", vus: "10", rps: "100", duration: "60" };
 
 function Metric({ label, value, tone = "" }) {
   return <section className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong></section>;
@@ -27,7 +27,7 @@ export default function App() {
     event.preventDefault();
     setSubmitting(true); setError("");
     try {
-      const target = await createTarget({ name: form.type === "model" ? "Model API" : "Web endpoint", type: form.type, url: form.url });
+      const target = await createTarget({ name: form.type === "model" ? "Model API" : "Web endpoint", type: form.type, url: form.url, model: form.model });
       setRun(await createRun(toRunConfig({ ...form, targetId: target.id })));
     } catch (err) { setError(err.message); }
     finally { setSubmitting(false); }
@@ -44,6 +44,7 @@ export default function App() {
         <div className="grid">
           <label>대상 유형<select name="type" value={form.type} onChange={update}><option value="model">GPU 모델 API</option><option value="web">웹/API</option></select></label>
           <label className="wide">내부 URL<input name="url" value={form.url} onChange={update} required /></label>
+          {form.type === "model" && <label className="wide">모델명<input name="model" value={form.model} onChange={update} placeholder="예: qwen/qwen3.6-35b-a3b" required /></label>}
           <label>부하 방식<select name="mode" value={form.mode} onChange={update}><option value="vu">동시 사용자 (VU)</option><option value="rps">요청률 (RPS)</option></select></label>
           {form.mode === "vu" ? <label>동시 사용자<input name="vus" type="number" min="1" max="500" value={form.vus} onChange={update} required /></label> : <label>요청률<input name="rps" type="number" min="1" max="2000" value={form.rps} onChange={update} required /></label>}
           <label>실행 시간 (초)<input name="duration" type="number" min="1" max="3600" value={form.duration} onChange={update} required /></label>
