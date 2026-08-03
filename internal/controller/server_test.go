@@ -109,3 +109,18 @@ func TestCancelSearchCancelsQueuedStep(t *testing.T) {
 		t.Fatalf("cancel: %d %s", cancel.Code, cancel.Body.String())
 	}
 }
+
+func TestCancelSearchCancelsRunningStep(t *testing.T) {
+	memory := store.NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
+	server := NewServer(memory)
+	server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/searches", bytes.NewBufferString(`{"run":{"target_id":"`+target.ID+`","mode":"vu","duration_seconds":1,"max_tokens":32},"start_load":5,"max_load":10}`)))
+	server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/agent/claim", nil))
+	cancel := httptest.NewRecorder()
+	server.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/api/searches/search-2/cancel", nil))
+	run := httptest.NewRecorder()
+	server.ServeHTTP(run, httptest.NewRequest(http.MethodGet, "/api/runs/run-3", nil))
+	if !bytes.Contains(run.Body.Bytes(), []byte(`"status":"cancelled"`)) {
+		t.Fatalf("run not cancelled: %s", run.Body.String())
+	}
+}

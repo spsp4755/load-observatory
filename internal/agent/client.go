@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/spsp4755/load-observatory/internal/core"
 )
@@ -45,7 +46,12 @@ func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 		return false, fmt.Errorf("invalid assignment")
 	}
 
-	resultBody, err := json.Marshal(RunTarget(ctx, assignment.Target, assignment.Run.Config))
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go watchCancellation(runCtx, baseURL, assignment.Run.ID, cancel, done)
+	resultBody, err := json.Marshal(RunTarget(runCtx, assignment.Target, assignment.Run.Config))
+	close(done)
 	if err != nil {
 		return false, err
 	}
@@ -63,4 +69,35 @@ func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 		return false, fmt.Errorf("report result: HTTP %d", response.StatusCode)
 	}
 	return true, nil
+}
+
+func watchCancellation(ctx context.Context, baseURL, runID string, cancel context.CancelFunc, done <-chan struct{}) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/runs/"+runID, nil)
+			if err != nil {
+				continue
+			}
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				continue
+			}
+			var run core.Run
+			if response.StatusCode == http.StatusOK {
+				_ = json.NewDecoder(response.Body).Decode(&run)
+			}
+			_ = response.Body.Close()
+			if run.Status == "cancelled" {
+				cancel()
+				return
+			}
+		}
+	}
 }

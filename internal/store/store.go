@@ -35,7 +35,7 @@ func (s *MemoryStore) Health() (int, int, bool) {
 	defer s.mu.RUnlock()
 	queued, running := 0, 0
 	for _, run := range s.runs {
-		if run.Status == "queued" {
+		if run.Status == "queued" || run.Status == "running" {
 			queued++
 		}
 		if run.Status == "running" {
@@ -102,7 +102,7 @@ func (s *MemoryStore) CancelSearch(id string) (core.AutoSearch, bool) {
 	s.searches[id] = search
 	for _, runID := range search.RunIDs {
 		run := s.runs[runID]
-		if run.Status == "queued" {
+		if run.Status == "queued" || run.Status == "running" {
 			run.Status = "cancelled"
 			s.runs[runID] = run
 		}
@@ -185,6 +185,9 @@ func (s *MemoryStore) CompleteRun(id string, result core.RunResult) (core.Run, b
 	run, ok := s.runs[id]
 	if !ok {
 		return core.Run{}, false
+	}
+	if run.Status == "cancelled" {
+		return run, true
 	}
 	run.Status = "completed"
 	run.Result = result
