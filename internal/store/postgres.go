@@ -12,9 +12,13 @@ import (
 type PostgresStore struct {
 	memory *MemoryStore
 	pool   *pgxpool.Pool
+	key    []byte
 }
 
-func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
+func NewPostgresStore(ctx context.Context, url string, key []byte) (*PostgresStore, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("PostgreSQL API key encryption requires a 32-byte key")
+	}
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		return nil, err
@@ -23,10 +27,14 @@ func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
 		pool.Close()
 		return nil, err
 	}
-	store := &PostgresStore{memory: NewMemoryStore(), pool: pool}
+	store := &PostgresStore{memory: NewMemoryStore(), pool: pool, key: key}
 	var state []byte
 	err = pool.QueryRow(ctx, `SELECT state FROM load_observatory_state WHERE id=true`).Scan(&state)
 	if err == nil {
+		if state, err = unprotectSnapshot(state, key); err != nil {
+			pool.Close()
+			return nil, err
+		}
 		if err = store.memory.Restore(state); err != nil {
 			pool.Close()
 			return nil, err
@@ -36,6 +44,10 @@ func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
 }
 func (s *PostgresStore) persist() {
 	data, err := s.memory.Snapshot()
+	if err != nil {
+		return
+	}
+	data, err = protectSnapshot(data, s.key)
 	if err != nil {
 		return
 	}

@@ -18,7 +18,11 @@ func main() {
 	}
 	var data store.Store = store.NewMemoryStore()
 	if url := os.Getenv("DATABASE_URL"); url != "" {
-		postgres, err := store.NewPostgresStore(context.Background(), url)
+		key, err := store.DecodeEncryptionKey(os.Getenv("TARGET_API_KEY_ENCRYPTION_KEY"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		postgres, err := store.NewPostgresStore(context.Background(), url, key)
 		if err != nil {
 			log.Fatal(err)
 		}

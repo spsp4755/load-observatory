@@ -58,3 +58,11 @@ kubectl apply -f deploy/k8s.yaml
 ## 알려진 MVP 범위
 
 Kubernetes 배포에서는 Controller가 `postgres-credentials` Secret의 `DATABASE_URL`을 사용해 실행 기록·등록 모델을 PostgreSQL에 영속화합니다. 배포 전에 `POSTGRES_PASSWORD`와 `DATABASE_URL`의 비밀번호를 함께 교체해야 합니다. 로컬에서 `DATABASE_URL`을 지정하지 않은 경우에만 메모리 저장소를 사용합니다.
+
+등록 모델의 인증키는 PostgreSQL 스냅샷에 AES-GCM으로 암호화해 저장합니다. 배포 전에 `TARGET_API_KEY_ENCRYPTION_KEY`에 아래처럼 생성한 Base64 32바이트 키를 설정해야 합니다. 이 값이 없거나 형식이 틀리면 Controller는 시작하지 않습니다.
+
+```powershell
+$key = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Fill($key)
+[Convert]::ToBase64String($key)
+```
