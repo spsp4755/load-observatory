@@ -17,3 +17,10 @@ test("keeps RAG and long-agent workloads distinct", () => {
   assert.equal(longAgent.agentWorkflow, true);
   assert.equal(longAgent.scenario.length, 6);
 });
+
+test("recommends a weighted mixed-user workload", () => {
+  const mixed = recommendWorkload("mixed", { warmupRequests: "3" });
+  assert.equal(mixed.agentWorkflow, false);
+  assert.deepEqual(mixed.scenario.map((task) => task.weight), [60, 25, 15]);
+  assert.equal(mixed.scenario.length, 3);
+});

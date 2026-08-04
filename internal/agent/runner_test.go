@@ -207,6 +207,33 @@ func TestRunTargetCompletesAgentSessionsInSequence(t *testing.T) {
 	}
 }
 
+func TestRunTargetMixesSingleRequestsAndAgentSessions(t *testing.T) {
+	var prompts []string
+	var mu sync.Mutex
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		mu.Lock()
+		prompts = append(prompts, request.Messages[0].Content)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer target.Close()
+	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, MaxTokens: 8, Journeys: []core.UserJourney{
+		{Name: "chat", Weight: 1, Scenario: []core.ScenarioTask{{Name: "chat", Prompt: "short question", Weight: 1, MaxTokens: 8}}},
+		{Name: "agent", Weight: 1, AgentWorkflow: true, Scenario: []core.ScenarioTask{{Name: "search", Prompt: "tool: search", Weight: 1, MaxTokens: 8}, {Name: "edit", Prompt: "tool: edit", Weight: 1, MaxTokens: 8}}},
+	}})
+	mu.Lock()
+	defer mu.Unlock()
+	if result.AgentSessions == 0 || len(prompts) < 3 {
+		t.Fatalf("mixed journeys did not execute agent and request traffic: result=%+v prompts=%v", result, prompts)
+	}
+}
+
 func TestRunDoesNotCountDeadlineCancellationAsFailure(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()

@@ -63,6 +63,7 @@ type RunConfig struct {
 	Stages                   []LoadStage    `json:"stages,omitempty"`
 	Scenario                 []ScenarioTask `json:"scenario,omitempty"`
 	AgentWorkflow            bool           `json:"agent_workflow,omitempty"`
+	Journeys                 []UserJourney  `json:"journeys,omitempty"`
 }
 
 type LoadStage struct {
@@ -76,6 +77,13 @@ type ScenarioTask struct {
 	Weight          int    `json:"weight"`
 	ThinkTimeMillis int    `json:"think_time_millis,omitempty"`
 	MaxTokens       int    `json:"max_tokens,omitempty"`
+}
+
+type UserJourney struct {
+	Name          string         `json:"name"`
+	Weight        int            `json:"weight"`
+	AgentWorkflow bool           `json:"agent_workflow,omitempty"`
+	Scenario      []ScenarioTask `json:"scenario"`
 }
 
 type Distribution struct {

@@ -28,6 +28,7 @@ type measurements struct {
 	tokens                                core.TokenUsage
 	timeline                              map[int64]*timelineMeasurement
 	sequence                              atomic.Int64
+	journeySequence                       atomic.Int64
 	stop                                  context.CancelFunc
 	stopped                               bool
 	guardrail                             string
@@ -123,11 +124,17 @@ func runRPS(ctx context.Context, client *http.Client, target core.Target, config
 				continue
 			}
 			wg.Add(1)
-			go func() { defer wg.Done(); defer func() { <-inFlight }(); doRequest(ctx, client, target, config, m) }()
+			go func() { defer wg.Done(); defer func() { <-inFlight }(); runJourney(ctx, client, target, config, m) }()
 		}
 	}
 }
 func runWorker(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+	if len(config.Journeys) > 0 {
+		for ctx.Err() == nil {
+			runJourney(ctx, client, target, config, m)
+		}
+		return
+	}
 	if config.AgentWorkflow {
 		for ctx.Err() == nil {
 			runAgentSession(ctx, client, target, config, m)
@@ -140,6 +147,31 @@ func runWorker(ctx context.Context, client *http.Client, target core.Target, con
 			case <-time.After(wait):
 			case <-ctx.Done():
 			}
+		}
+	}
+}
+
+func runJourney(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+	if len(config.Journeys) == 0 {
+		if config.AgentWorkflow {
+			runAgentSession(ctx, client, target, config, m)
+		} else {
+			doRequest(ctx, client, target, config, m)
+		}
+		return
+	}
+	journey := m.nextJourney(config.Journeys)
+	journeyConfig := config
+	journeyConfig.AgentWorkflow = journey.AgentWorkflow
+	journeyConfig.Scenario = journey.Scenario
+	if journey.AgentWorkflow {
+		runAgentSession(ctx, client, target, journeyConfig, m)
+		return
+	}
+	if wait := doRequest(ctx, client, target, journeyConfig, m); wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
 		}
 	}
 }
@@ -177,7 +209,7 @@ func runAgentSession(ctx context.Context, client *http.Client, target core.Targe
 
 func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) time.Duration {
 	started := time.Now()
-	sequence, varied, prompt, think := m.nextWorkload(config)
+	sequence, varied, prompt, think, maxTokens := m.nextWorkload(config)
 	method, body := http.MethodGet, io.Reader(nil)
 	requestURL := target.URL
 	if varied && target.Type == core.TargetTypeWeb {
@@ -192,7 +224,7 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		if varied {
 			prompt += fmt.Sprintf("\n\n[Load Observatory variation run=%s request=%d]", config.WorkloadID, sequence)
 		}
-		payload, err := json.Marshal(map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "max_tokens": config.MaxTokens, "stream": target.Type == core.TargetTypeModel, "stream_options": map[string]bool{"include_usage": true}})
+		payload, err := json.Marshal(map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "max_tokens": maxTokens, "stream": target.Type == core.TargetTypeModel, "stream_options": map[string]bool{"include_usage": true}})
 		if err != nil {
 			m.recordFailure(time.Since(started).Milliseconds(), "encode request")
 			return 0
@@ -331,10 +363,11 @@ func readModelJSON(body io.Reader) (core.TokenUsage, error) {
 	return payload.Usage.tokenUsage(), nil
 }
 
-func (m *measurements) nextWorkload(config core.RunConfig) (int64, bool, string, time.Duration) {
+func (m *measurements) nextWorkload(config core.RunConfig) (int64, bool, string, time.Duration, int) {
 	sequence := m.sequence.Add(1)
 	prompt := config.Prompt
 	think := time.Duration(0)
+	maxTokens := config.MaxTokens
 	if len(config.Scenario) > 0 {
 		total := 0
 		for _, task := range config.Scenario {
@@ -346,6 +379,9 @@ func (m *measurements) nextWorkload(config core.RunConfig) (int64, bool, string,
 			if pick < 0 {
 				prompt = task.Prompt
 				think = time.Duration(task.ThinkTimeMillis) * time.Millisecond
+				if task.MaxTokens > 0 {
+					maxTokens = task.MaxTokens
+				}
 				break
 			}
 		}
@@ -362,7 +398,23 @@ func (m *measurements) nextWorkload(config core.RunConfig) (int64, bool, string,
 		}
 		varied = (sequence*37)%100 < int64(percent)
 	}
-	return sequence, varied, prompt, think
+	return sequence, varied, prompt, think, maxTokens
+}
+
+func (m *measurements) nextJourney(journeys []core.UserJourney) core.UserJourney {
+	sequence := m.journeySequence.Add(1)
+	total := 0
+	for _, journey := range journeys {
+		total += journey.Weight
+	}
+	pick := int(sequence % int64(total))
+	for _, journey := range journeys {
+		pick -= journey.Weight
+		if pick < 0 {
+			return journey
+		}
+	}
+	return journeys[0]
 }
 func (m *measurements) reset() {
 	m.mu.Lock()

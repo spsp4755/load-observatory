@@ -69,7 +69,7 @@ func ValidateRunConfig(config RunConfig) error {
 	if config.MinGoodputPercent < 0 || config.MinGoodputPercent > 100 || config.MaxTTPOTP95Millis < 0 {
 		return errors.New("invalid LLM guardrail")
 	}
-	if len(config.Stages) > 12 || len(config.Scenario) > 8 {
+	if len(config.Stages) > 12 || len(config.Scenario) > 8 || len(config.Journeys) > 5 {
 		return errors.New("too many stages or scenario tasks")
 	}
 	for _, stage := range config.Stages {
@@ -78,9 +78,23 @@ func ValidateRunConfig(config RunConfig) error {
 		}
 	}
 	for _, task := range config.Scenario {
-		if task.Name == "" || task.Prompt == "" || task.Weight < 1 || task.Weight > 100 || task.ThinkTimeMillis < 0 || task.ThinkTimeMillis > 60000 || task.MaxTokens < 0 || task.MaxTokens > MaxModelTokens {
+		if !validScenarioTask(task) {
 			return errors.New("invalid scenario task")
 		}
 	}
+	for _, journey := range config.Journeys {
+		if journey.Name == "" || journey.Weight < 1 || journey.Weight > 100 || len(journey.Scenario) == 0 || len(journey.Scenario) > 8 {
+			return errors.New("invalid user journey")
+		}
+		for _, task := range journey.Scenario {
+			if !validScenarioTask(task) {
+				return errors.New("invalid user journey task")
+			}
+		}
+	}
 	return nil
+}
+
+func validScenarioTask(task ScenarioTask) bool {
+	return task.Name != "" && task.Prompt != "" && task.Weight >= 1 && task.Weight <= 100 && task.ThinkTimeMillis >= 0 && task.ThinkTimeMillis <= 60000 && task.MaxTokens >= 0 && task.MaxTokens <= MaxModelTokens
 }

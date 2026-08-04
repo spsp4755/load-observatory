@@ -23,6 +23,7 @@ import {
   summarizeMonitoring,
 } from "./results.js";
 import { recommendWorkload } from "./workload-profiles.js";
+import { operationalSummary } from "./operational-summary.js";
 
 const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   type: "model",
@@ -89,6 +90,7 @@ function Details({ run, onCancel }) {
   const tpot = result.tpot || {};
   const tokens = result.tokens || {};
   const verdict = getVerdict(run);
+  const operational = operationalSummary(run);
   const monitoring = summarizeMonitoring(run.monitoring);
   const distribution = (values) => (
     <div className="distribution-values">
@@ -129,6 +131,14 @@ function Details({ run, onCancel }) {
             실행 중지
           </button>
         )}
+      </section>
+      <section className={`panel operational-decision ${operational.status}`}>
+        <div>
+          <h3>운영 판단</h3>
+          <strong>{operational.headline}</strong>
+          <p>{operational.nextAction}</p>
+        </div>
+        <span className="decision-cause">판단 근거: {operational.cause}</span>
       </section>
       <section className="panel">
         <h3>실행 설정</h3>
@@ -310,6 +320,7 @@ function ScenarioControls({ form, setForm }) {
   const applySimpleProfile = () => setForm((current) => recommendWorkload("simple", current));
   const applyRAGProfile = () => setForm((current) => recommendWorkload("rag", current));
   const applyLongAgentProfile = () => setForm((current) => recommendWorkload("long-agent", current));
+  const applyMixedProfile = () => setForm((current) => recommendWorkload("mixed", current));
   const addScenario = () =>
     setForm((current) => ({
       ...current,
@@ -356,18 +367,21 @@ function ScenarioControls({ form, setForm }) {
       ),
     }));
   const scenario = form.scenario || [];
+  const journeys = form.journeys || [];
   const callsPerUser = form.agentWorkflow ? scenario.length : 1;
-  const outputBudget = scenario.reduce(
-    (total, task) => total + Number(task.max_tokens || form.maxTokens || 0),
-    0,
-  );
+  const outputBudget = form.agentWorkflow
+    ? scenario.reduce((total, task) => total + Number(task.max_tokens || form.maxTokens || 0), 0)
+    : Math.max(Number(form.maxTokens || 0), ...scenario.map((task) => Number(task.max_tokens || 0)), ...journeys.flatMap((journey) => journey.scenario || []).map((task) => Number(task.max_tokens || 0)));
+  const workloadName = form.agentWorkflow ? "순차 에이전트 세션" : scenario.length > 1 ? "혼합 요청 사용자군" : "단일 질의 요청";
+  const callsLabel = journeys.length ? "사용자군별 호출" : "사용자당 호출";
+  const callsValue = journeys.length ? "단일 1회 / 에이전트 3회" : `${callsPerUser}회`;
   return (
     <section className="advanced panel">
       <section className="workload-plan" aria-live="polite">
-        <div><span>현재 테스트 계획</span><strong>{form.agentWorkflow ? "순차 에이전트 세션" : "단일 질의 요청"}</strong></div>
-        <div><span>사용자당 호출</span><strong>{callsPerUser}회</strong></div>
-        <div><span>사용자당 최대 출력 예산</span><strong>{outputBudget.toLocaleString()} 토큰</strong></div>
-        <p>VU는 동시 사용자 수입니다. 에이전트 워크로드는 한 사용자가 각 단계를 순서대로 실행합니다.</p>
+        <div><span>현재 테스트 계획</span><strong>{workloadName}</strong></div>
+        <div><span>{callsLabel}</span><strong>{callsValue}</strong></div>
+        <div><span>{form.agentWorkflow ? "사용자당 최대 출력 예산" : "요청당 최대 출력 예산"}</span><strong>{outputBudget.toLocaleString()} 토큰</strong></div>
+        <p>VU는 동시 사용자 수입니다. 혼합 사용자군은 가중치 비율로 요청을 섞고, 에이전트 워크로드는 각 단계를 순서대로 실행합니다.</p>
       </section>
       <h3>추천 워크로드</h3>
       <div className="workflow-grid">
@@ -375,6 +389,7 @@ function ScenarioControls({ form, setForm }) {
       <div className="workflow-choice"><div><strong>RAG 사용자</strong><p>긴 검색 컨텍스트를 읽고 근거 기반 응답을 만드는 사용자 프로필입니다.</p></div><button type="button" className="small" onClick={applyRAGProfile}>RAG로 구성</button></div>
       <div className="workflow-choice"><div><strong>개발 에이전트 세션</strong><p>파일 검색 · 코드 수정 · 테스트 · 검토를 하나의 사용자 세션으로 순차 실행합니다.</p></div><button type="button" className={form.agentWorkflow ? "active" : "small"} onClick={applyAgentWorkflow}>{form.agentWorkflow ? "개발 에이전트 적용됨" : "개발 에이전트로 구성"}</button></div>
       <div className="workflow-choice"><div><strong>장기 에이전트 작업</strong><p>탐색부터 구현·재검토까지 6단계의 긴 개발 작업을 재현합니다.</p></div><button type="button" className="small" onClick={applyLongAgentProfile}>장기 작업으로 구성</button></div>
+      <div className="workflow-choice mixed"><div><strong>현실적 혼합 사용자군</strong><p>간단 질의 60% · RAG 25% · 개발 작업 15%를 하나의 부하 테스트에 섞습니다.</p></div><button type="button" className="small" onClick={applyMixedProfile}>혼합 사용자군으로 구성</button></div>
       </div>
       <details className="advanced-editor">
         <summary>고급 설정 직접 편집</summary>
