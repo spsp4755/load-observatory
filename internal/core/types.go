@@ -71,6 +71,10 @@ type RunConfig struct {
 	// comparable between runs. It is a vLLM/SGLang extension, so it is opt-in:
 	// a server that rejects unknown fields would fail every request.
 	IgnoreEOS bool `json:"ignore_eos,omitempty"`
+	// MaxNumSeqs is the server's configured concurrency ceiling, entered by the
+	// operator. When execution pins to it while requests queue, the limit is the
+	// configuration rather than the hardware.
+	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
 }
 
 type LoadStage struct {
@@ -220,14 +224,57 @@ type RunResult struct {
 	OutputLengthPinned    bool  `json:"output_length_pinned"`
 }
 
+// MonitoringSample is one second of server-side state. Metrics is a map rather
+// than fixed fields because an absent metric must stay absent: DCGM profiling
+// fields silently fail to collect on some drivers and in some containers, and
+// reporting those as 0 would read as "idle GPU" instead of "not measured".
 type MonitoringSample struct {
-	Status         string  `json:"status"`
-	GPUUtilization float64 `json:"gpu_utilization"`
-	GPUMemoryUsed  float64 `json:"gpu_memory_used"`
-	CPUUtilization float64 `json:"cpu_utilization"`
-	MemoryUsed     float64 `json:"memory_used"`
-	Message        string  `json:"message,omitempty"`
+	AtSecond int64              `json:"at_second"`
+	Status   string             `json:"status"`
+	Backend  string             `json:"backend,omitempty"`
+	Message  string             `json:"message,omitempty"`
+	Metrics  map[string]float64 `json:"metrics,omitempty"`
 }
+
+func (s MonitoringSample) Value(key string) (float64, bool) {
+	if s.Metrics == nil {
+		return 0, false
+	}
+	value, ok := s.Metrics[key]
+	return value, ok
+}
+
+// Engine queueing and KV state. The capacity verdict rests on these three
+// together: KV usage alone is high by design, because vLLM deliberately fills
+// the cache to maximise batch size.
+const (
+	MetricRequestsRunning    = "requests_running"
+	MetricRequestsWaiting    = "requests_waiting"
+	MetricKVCacheUsage       = "kv_cache_usage"
+	MetricPreemptionRate     = "preemption_rate"
+	MetricQueueTimeP95       = "queue_time_p95_millis"
+	MetricPrefillTimeP95     = "prefill_time_p95_millis"
+	MetricPrefixCacheHitRate = "prefix_cache_hit_rate"
+	MetricCorruptedRate      = "corrupted_requests_rate"
+)
+
+// GPU state. GPU utilization is time-based ("was any kernel running") and reads
+// 90-100% even at batch size 1, so it must never be read as a capacity ceiling.
+// DRAM activity is what actually saturates during decode.
+const (
+	MetricGPUUtilization       = "gpu_utilization"
+	MetricGPUMemoryUsed        = "gpu_memory_used"
+	MetricDRAMActive           = "dram_active"
+	MetricTensorActive         = "tensor_active"
+	MetricSMActive             = "sm_active"
+	MetricSMOccupancy          = "sm_occupancy"
+	MetricSMClockMHz           = "sm_clock_mhz"
+	MetricPowerViolationRate   = "power_violation_rate"
+	MetricThermalViolationRate = "thermal_violation_rate"
+	MetricXIDErrors            = "xid_errors"
+	MetricCPUUtilization       = "cpu_utilization"
+	MetricMemoryUsed           = "memory_used"
+)
 
 type Run struct {
 	ID         string             `json:"id"`
@@ -237,6 +284,9 @@ type Run struct {
 	Result     RunResult          `json:"result"`
 	Monitoring []MonitoringSample `json:"monitoring,omitempty"`
 	Progress   []RunProgress      `json:"progress,omitempty"`
+	// StartedUnix is when the run began executing, used to align the server-side
+	// samples with the client-side timeline.
+	StartedUnix int64 `json:"started_unix,omitempty"`
 }
 
 type AutoSearchStatus string

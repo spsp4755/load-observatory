@@ -19,6 +19,11 @@ import { toRunConfig, toSearchConfig } from "./run-form.js";
 import {
   completionShortfall,
   getVerdict,
+  gpuBoundLabel,
+  hasMetric,
+  metricKeys,
+  metricMean,
+  metricPeak,
   milliseconds,
   rate,
   summarizeMonitoring,
@@ -48,6 +53,7 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   steadyStateSeconds: "60",
   minCompletionPercent: "95",
   ignoreEOS: false,
+  maxNumSeqs: "0",
   tokensPerSecond: String(defaultTokensPerSecond),
   maxErrorPercent: "2",
   maxP95Millis: "2000",
@@ -176,6 +182,69 @@ function LiveProgress({ run }) {
   );
 }
 
+const percentOf = (monitoring, key, digits = 0) => {
+  const peak = metricPeak(monitoring, key);
+  return peak == null ? "—" : `${peak.toFixed(digits)}%`;
+};
+const ratioOf = (monitoring, key) => {
+  const mean = metricMean(monitoring, key);
+  return mean == null ? "미수집" : `${(mean * 100).toFixed(0)}%`;
+};
+const countOf = (monitoring, key) => {
+  const peak = metricPeak(monitoring, key);
+  return peak == null ? "미수집" : peak.toFixed(0);
+};
+
+// ServerState shows what the model server itself reported, which is what makes a
+// client-side latency attributable to a cause rather than just observed.
+function ServerState({ monitoring }) {
+  if (!monitoring.available) return null;
+  const bound = gpuBoundLabel(monitoring);
+  const backendLabel = { vllm: "vLLM", sglang: "SGLang", tgi: "TGI" }[monitoring.backend] || "알 수 없음";
+  return (
+    <section className="panel">
+      <h3>
+        모델 서버 상태
+        <span className="phase-tag">{backendLabel}</span>
+      </h3>
+      {monitoring.message && <p className="warn-line">{monitoring.message}</p>}
+      <div className="metrics">
+        <Metric label="대기 요청 (최대)" value={countOf(monitoring, metricKeys.requestsWaiting)} />
+        <Metric label="동시 실행 (최대)" value={countOf(monitoring, metricKeys.requestsRunning)} />
+        <Metric label="KV 캐시 (평균)" value={ratioOf(monitoring, metricKeys.kvCacheUsage)} />
+        <Metric label="Preemption (최대/초)" value={countOf(monitoring, metricKeys.preemptionRate)} />
+        <Metric label="prefix 캐시 히트 (평균)" value={ratioOf(monitoring, metricKeys.prefixCacheHitRate)} />
+        <Metric label="서버 큐 대기 P95" value={millisOf(monitoring, metricKeys.queueTimeP95)} />
+      </div>
+      <p className="muted">
+        KV 캐시 사용률이 높은 것 자체는 정상입니다. vLLM은 배치를 키우려고 캐시를 의도적으로 채웁니다. 포화는{" "}
+        <b>대기 요청이 지속되고 preemption이 발생할 때</b>입니다.
+      </p>
+      {bound && (
+        <>
+          <h4>GPU 병목 성격</h4>
+          <div className="metrics">
+            <Metric label="메모리 대역폭 (평균)" value={ratioOf(monitoring, metricKeys.dramActive)} />
+            <Metric label="텐서 코어 (평균)" value={ratioOf(monitoring, metricKeys.tensorActive)} />
+            <Metric label="SM 점유율 (평균)" value={ratioOf(monitoring, metricKeys.smOccupancy)} />
+            <Metric label="SM 클럭 (평균)" value={mhzOf(monitoring, metricKeys.smClockMHz)} />
+          </div>
+          <p className={bound.bound === "underused" ? "warn-line" : "muted"}>{bound.text}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
+const millisOf = (monitoring, key) => {
+  const mean = metricMean(monitoring, key);
+  return mean == null ? "미수집" : `${mean.toFixed(0)} ms`;
+};
+const mhzOf = (monitoring, key) => {
+  const mean = metricMean(monitoring, key);
+  return mean == null ? "미수집" : `${mean.toFixed(0)} MHz`;
+};
+
 function Details({ run, onCancel }) {
   if (!run)
     return (
@@ -237,6 +306,57 @@ function Details({ run, onCancel }) {
           </button>
         )}
       </section>
+      {run.validity && run.validity.trustworthy === false && (
+        <section className="panel verdict at-risk">
+          <div>
+            <h3>이 실행은 신뢰할 수 없습니다</h3>
+            <ul className="errors">
+              {(run.validity.reasons || []).map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+            <p>아래 수치는 참고용입니다. 원인을 해소한 뒤 다시 측정하세요.</p>
+          </div>
+        </section>
+      )}
+      {run.saturation && run.saturation.state !== "unknown" && (
+        <section className={`panel saturation ${run.saturation.state}`}>
+          <div>
+            <h3>서버 포화 판정</h3>
+            <strong>{run.saturation.headline}</strong>
+            {run.saturation.detail && <p>{run.saturation.detail}</p>}
+          </div>
+          <span className="decision-cause">
+            대기 최대 {run.saturation.peak_waiting?.toFixed(0) ?? 0} · KV 평균{" "}
+            {((run.saturation.avg_kv_cache_usage ?? 0) * 100).toFixed(0)}% · preemption{" "}
+            {(run.saturation.preemption_rate ?? 0).toFixed(2)}/초
+          </span>
+        </section>
+      )}
+      {run.attribution?.available && (
+        <section className={`panel attribution ${run.attribution.verdict}`}>
+          <div>
+            <h3>병목 귀속</h3>
+            <strong>{run.attribution.headline}</strong>
+            {run.attribution.verdict === "metrics_not_this_run" ? (
+              <p>
+                서버 대기 {run.attribution.server_queue_millis?.toFixed(0)} ms + prefill{" "}
+                {run.attribution.server_prefill_millis?.toFixed(0)} ms &gt; 클라이언트 TTFT P95{" "}
+                {run.attribution.client_ttft_millis} ms. Prometheus 쿼리를 이 모델·인스턴스로 좁히거나, 측정 중 다른 트래픽을
+                차단한 뒤 다시 측정하세요.
+              </p>
+            ) : (
+              <p>
+                클라이언트 TTFT P95 {run.attribution.client_ttft_millis} ms = 서버 대기{" "}
+                {run.attribution.server_queue_millis?.toFixed(0)} ms + prefill{" "}
+                {run.attribution.server_prefill_millis?.toFixed(0)} ms + 설명되지 않음{" "}
+                {run.attribution.unaccounted_millis?.toFixed(0)} ms (
+                {run.attribution.unaccounted_percent?.toFixed(0)}%)
+              </p>
+            )}
+          </div>
+        </section>
+      )}
       <section className={`panel operational-decision ${operational.status}`}>
         <div>
           <h3>운영 판단</h3>
@@ -461,27 +581,24 @@ function Details({ run, onCancel }) {
           </table>
         </section>
       )}
+      <ServerState monitoring={monitoring} />
       <section className="panel">
         <h3>인프라 모니터링</h3>
         {monitoring.available ? (
-          <div className="metrics">
-            <Metric
-              label="GPU 사용률 (최대)"
-              value={`${monitoring.gpu.toFixed(1)}%`}
-            />
-            <Metric
-              label="GPU 메모리 (최대)"
-              value={`${monitoring.gpuMemory.toFixed(1)}%`}
-            />
-            <Metric
-              label="CPU 사용률 (최대)"
-              value={`${monitoring.cpu.toFixed(1)}%`}
-            />
-            <Metric
-              label="메모리 사용률 (최대)"
-              value={`${monitoring.memory.toFixed(1)}%`}
-            />
-          </div>
+          <>
+            <div className="metrics">
+              <Metric label="GPU 사용률 (최대)" value={percentOf(monitoring, metricKeys.gpuUtilization, 1)} />
+              <Metric label="GPU 메모리 (최대)" value={percentOf(monitoring, metricKeys.gpuMemoryUsed, 1)} />
+              <Metric label="CPU 사용률 (최대)" value={percentOf(monitoring, metricKeys.cpuUtilization, 1)} />
+              <Metric label="메모리 사용률 (최대)" value={percentOf(monitoring, metricKeys.memoryUsed, 1)} />
+            </div>
+            {hasMetric(monitoring, metricKeys.gpuUtilization) && (
+              <p className="muted">
+                GPU 사용률은 「커널이 하나라도 실행됐는지」를 재는 값이라 동시 요청 1건에서도 100%에 가깝습니다.{" "}
+                <b>이 값만으로 용량 한계를 판단하면 실제 수용량을 크게 과소평가합니다.</b> 위 「GPU 병목 성격」을 보세요.
+              </p>
+            )}
+          </>
         ) : (
           <p className="muted">수집 불가: {monitoring.message}</p>
         )}
@@ -1045,6 +1162,17 @@ function TestSettings({
         />
       </label>
       <label>
+        서버 max_num_seqs (선택)
+        <small>모델 서버의 동시 실행 상한입니다. 입력하면 「하드웨어 한계」와 「설정 한계」를 구분해 판정합니다.</small>
+        <input
+          name="maxNumSeqs"
+          type="number"
+          min="0"
+          value={form.maxNumSeqs ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
         예상 생성 속도 (tok/s)
         <small>실행 시간이 충분한지 계산하는 데만 씁니다. 실제 측정값으로 보정하세요.</small>
         <input
@@ -1482,6 +1610,16 @@ export default function App() {
       setError(err.message);
     }
   };
+  // The list response omits the per-second sample series to stay small, so a run
+  // selected from it has to be re-fetched for the server-side detail panels.
+  const selectRun = async (item) => {
+    setRun(item);
+    try {
+      setRun(await getRun(item.id));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
   const stopRun = async (id) => {
     try {
       const cancelled = await cancelRun(id);
@@ -1638,7 +1776,7 @@ export default function App() {
         )}
         {page === "records" && (
           <>
-            <Records runs={runs} choose={setRun} />
+            <Records runs={runs} choose={selectRun} />
             <Comparison runs={runs} />
             <LiveProgress run={run} />
             <Details run={run} onCancel={stopRun} />

@@ -36,6 +36,16 @@ button.small { margin: 0; padding: 8px 12px; } table { width: 100%; border-colla
 .scroll-x { overflow-x:auto; }
 tr.row-at-risk td { background:#1d1409; }
 td.cell-at-risk { color:#ffb4a8; font-weight:700; }
+.saturation, .attribution { display:flex; justify-content:space-between; gap:20px; border-left:3px solid #6f8090; }
+.saturation.headroom { border-left-color:#4be391; }
+.saturation.saturated { border-left-color:#ff8181; }
+.saturation.config_limited { border-left-color:#e1a940; }
+.attribution.server_bound { border-left-color:#277de5; }
+.attribution.client_or_network_bound { border-left-color:#e1a940; }
+.attribution.metrics_not_this_run { border-left-color:#ff8181; }
+.saturation strong, .attribution strong { display:block; color:#eef7ff; }
+.saturation p, .attribution p { margin:8px 0 0; color:#9eb1bd; }
+.panel h4 { margin:24px 0 12px; }
 .config-summary b.unpinned { color:#f0d9a4; }
 .checkbox-field { grid-template-columns:1fr auto; align-items:start; gap:14px; }
 .checkbox-field input[type="checkbox"] { width:20px; height:20px; min-width:20px; margin-top:2px; cursor:pointer; }

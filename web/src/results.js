@@ -47,15 +47,73 @@ export function getVerdict(run) {
 export const rate = (part, total) => total ? `${(part / total * 100).toFixed(1)}%` : "—";
 export const milliseconds = (value) => value == null ? "—" : `${value} ms`;
 
+// Metric keys shared with the Go side.
+export const metricKeys = {
+  requestsRunning: "requests_running",
+  requestsWaiting: "requests_waiting",
+  kvCacheUsage: "kv_cache_usage",
+  preemptionRate: "preemption_rate",
+  queueTimeP95: "queue_time_p95_millis",
+  prefillTimeP95: "prefill_time_p95_millis",
+  prefixCacheHitRate: "prefix_cache_hit_rate",
+  gpuUtilization: "gpu_utilization",
+  gpuMemoryUsed: "gpu_memory_used",
+  dramActive: "dram_active",
+  tensorActive: "tensor_active",
+  smActive: "sm_active",
+  smOccupancy: "sm_occupancy",
+  smClockMHz: "sm_clock_mhz",
+  cpuUtilization: "cpu_utilization",
+  memoryUsed: "memory_used",
+};
+
+// summarizeMonitoring reports peak and mean per metric, and reports a metric that
+// was never collected as absent rather than as zero — an unmeasured GPU must not
+// read as an idle one.
 export function summarizeMonitoring(samples = []) {
-  const available = samples.filter((sample) => sample.status === "collected");
-  if (!available.length) return { available: false, gpu: 0, gpuMemory: 0, cpu: 0, memory: 0, message: samples.find((sample) => sample.message)?.message || "모니터링 데이터가 없습니다." };
+  const usable = samples.filter((sample) => sample.metrics && Object.keys(sample.metrics).length);
+  if (!usable.length) {
+    return {
+      available: false,
+      metrics: {},
+      backend: "",
+      message: samples.find((sample) => sample.message)?.message || "서버측 모니터링 데이터가 없습니다.",
+    };
+  }
+  const metrics = {};
+  for (const sample of usable) {
+    for (const [key, value] of Object.entries(sample.metrics)) {
+      const entry = metrics[key] || (metrics[key] = { count: 0, sum: 0, peak: -Infinity, last: 0 });
+      entry.count += 1;
+      entry.sum += value;
+      entry.peak = Math.max(entry.peak, value);
+      entry.last = value;
+    }
+  }
+  for (const entry of Object.values(metrics)) entry.mean = entry.sum / entry.count;
   return {
     available: true,
-    gpu: Math.max(...available.map((sample) => sample.gpu_utilization || 0)),
-    gpuMemory: Math.max(...available.map((sample) => sample.gpu_memory_used || 0)),
-    cpu: Math.max(...available.map((sample) => sample.cpu_utilization || 0)),
-    memory: Math.max(...available.map((sample) => sample.memory_used || 0)),
-    message: "",
+    metrics,
+    backend: usable.find((sample) => sample.backend)?.backend || "",
+    samples: usable.length,
+    message: samples.find((sample) => sample.status === "partial" && sample.message)?.message || "",
   };
+}
+
+export const hasMetric = (summary, key) => Boolean(summary?.metrics?.[key]);
+export const metricPeak = (summary, key) => summary?.metrics?.[key]?.peak;
+export const metricMean = (summary, key) => summary?.metrics?.[key]?.mean;
+
+// gpuBoundLabel classifies what the GPU was limited by. GPU utilization alone is
+// misleading: it reads ~100% at batch size 1 because it only asks whether any
+// kernel ran. DRAM activity is what saturates during decode.
+export function gpuBoundLabel(summary) {
+  const dram = metricMean(summary, metricKeys.dramActive);
+  const tensor = metricMean(summary, metricKeys.tensorActive);
+  if (dram == null) return null;
+  if (dram >= 0.6 && (tensor == null || tensor < dram))
+    return { bound: "memory", text: "메모리 대역폭 바운드 — 정상적인 decode 상태입니다. GPU 증설보다 배치·양자화·KV 설정이 효과적입니다." };
+  if (tensor != null && tensor >= 0.5)
+    return { bound: "compute", text: "연산(텐서 코어) 바운드 — prefill이 우세합니다. 입력 길이 분포와 chunked prefill 예산을 확인하세요." };
+  return { bound: "underused", text: "GPU가 충분히 쓰이지 않았습니다. 동시 사용자를 늘려 배치를 키울 여지가 있습니다." };
 }

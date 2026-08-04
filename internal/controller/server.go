@@ -21,7 +21,28 @@ type Server struct {
 
 func NewServer(memory store.Store) *Server { return &Server{store: memory} }
 func NewServerWithMonitor(memory store.Store, client monitor.Client) *Server {
-	return &Server{store: memory, monitor: client}
+	server := &Server{store: memory, monitor: client}
+	go server.sampleServerMetrics()
+	return server
+}
+
+// sampleServerMetrics attaches one server-side sample per second to every running
+// run. Two samples per run would not let a client-side latency be attributed to a
+// server-side cause, which is the whole point of collecting them.
+func (s *Server) sampleServerMetrics() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		active := s.store.ActiveRunIDs()
+		if len(active) == 0 {
+			continue
+		}
+		// One scrape shared by every running run.
+		sample := s.monitor.Sample()
+		for _, id := range active {
+			s.store.AddMonitoring(id, sample)
+		}
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +68,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/searches/") && strings.HasSuffix(r.URL.Path, "/cancel"):
 		s.cancelSearch(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/runs":
-		writeJSON(w, http.StatusOK, s.store.ListRuns())
+		writeJSON(w, http.StatusOK, listView(s.store.ListRuns()))
 	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
 		queued, running, agentOnline := s.store.Health()
 		writeJSON(w, http.StatusOK, map[string]any{"controller_online": true, "agent_online": agentOnline, "queued_runs": queued, "running_runs": running})
@@ -95,8 +116,13 @@ func (s *Server) completeShard(w http.ResponseWriter, r *http.Request) {
 	if run.Status == "completed" {
 		s.store.AddMonitoring(run.ID, s.monitor.Sample())
 		s.store.AdvanceSearch(run.ID)
+		// Re-read so the response carries the whole sample series the verdicts
+		// are derived from, including the one just added.
+		if fresh, ok := s.store.GetRun(run.ID); ok {
+			run = fresh
+		}
 	}
-	writeJSON(w, http.StatusOK, run)
+	writeJSON(w, http.StatusOK, view(run))
 }
 
 func (s *Server) reportProgress(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +349,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	run := s.store.CreateRun(config)
 	s.store.AddMonitoring(run.ID, s.monitor.Sample())
-	writeJSON(w, http.StatusCreated, run)
+	writeJSON(w, http.StatusCreated, view(run))
 }
 
 func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
@@ -333,7 +359,7 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	writeJSON(w, http.StatusOK, view(run))
 }
 
 func applyWorkloadDefaults(config *core.RunConfig) {
@@ -364,7 +390,38 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	writeJSON(w, http.StatusOK, view(run))
+}
+
+// runView is a Run plus the verdicts derived from its server-side samples. They
+// are computed on read rather than stored so an existing run gains them as the
+// reasoning improves, and so they cannot drift from the samples they summarise.
+type runView struct {
+	core.Run
+	Saturation  core.SaturationVerdict  `json:"saturation"`
+	Validity    core.RunValidity        `json:"validity"`
+	Attribution core.LatencyAttribution `json:"attribution"`
+}
+
+func view(run core.Run) runView {
+	return runView{
+		Run:         run,
+		Saturation:  core.AssessSaturation(run.Monitoring, run.Config),
+		Validity:    core.AssessRunValidity(run.Monitoring, run.Result, run.Config),
+		Attribution: core.AttributeTTFT(run.Result, run.Monitoring),
+	}
+}
+
+// listView keeps the verdicts but drops the per-second sample series, which would
+// otherwise dominate the size of a list response.
+func listView(runs []core.Run) []runView {
+	views := make([]runView, 0, len(runs))
+	for _, run := range runs {
+		item := view(run)
+		item.Monitoring = nil
+		views = append(views, item)
+	}
+	return views
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

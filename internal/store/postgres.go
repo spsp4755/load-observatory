@@ -109,9 +109,11 @@ func (s *PostgresStore) SetShardProgress(shardID string, progress core.RunProgre
 	return s.memory.SetShardProgress(shardID, progress)
 }
 func (s *PostgresStore) AddMonitoring(id string, sample core.MonitoringSample) {
+	// Sampled once a second while a run executes, so it is not persisted on every
+	// sample; the completed run's snapshot carries the whole series.
 	s.memory.AddMonitoring(id, sample)
-	s.persist()
 }
+func (s *PostgresStore) ActiveRunIDs() []string { return s.memory.ActiveRunIDs() }
 func (s *PostgresStore) TouchAgent()              { s.memory.TouchAgent() }
 func (s *PostgresStore) Health() (int, int, bool) { return s.memory.Health() }
 func (s *PostgresStore) CreateSearch(v core.AutoSearchConfig) core.AutoSearch {

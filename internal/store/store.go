@@ -24,6 +24,7 @@ type Store interface {
 	CompleteShard(string, core.RunResult) (core.Run, bool)
 	SetShardProgress(string, core.RunProgress) bool
 	AddMonitoring(string, core.MonitoringSample)
+	ActiveRunIDs() []string
 	TouchAgent()
 	Health() (int, int, bool)
 	CreateSearch(core.AutoSearchConfig) core.AutoSearch
@@ -382,6 +383,9 @@ func (s *MemoryStore) ClaimRun() (core.Assignment, bool) {
 		shard.Status = "running"
 		s.shards[shardID] = shard
 		run.Status = "running"
+		if run.StartedUnix == 0 {
+			run.StartedUnix = time.Now().Unix()
+		}
 		s.runs[run.ID] = run
 		// Each shard counts its own requests from 1, so the cache-bypass nonce
 		// must carry the shard ID too or two shards emit identical prompts and
@@ -689,12 +693,37 @@ func max(left, right int64) int64 {
 	return right
 }
 
+// maxMonitoringSamples bounds the per-second server-side series kept per run,
+// covering the longest allowed run plus its drain and cooldown.
+const maxMonitoringSamples = core.MaxDurationSeconds + 900
+
 func (s *MemoryStore) AddMonitoring(id string, sample core.MonitoringSample) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run, ok := s.runs[id]
-	if ok {
-		run.Monitoring = append(run.Monitoring, sample)
-		s.runs[id] = run
+	if !ok || len(run.Monitoring) >= maxMonitoringSamples {
+		return
 	}
+	// Stamp the sample with its offset from the moment the run started so the
+	// server-side series lines up with the client-side timeline.
+	if run.StartedUnix > 0 {
+		sample.AtSecond = time.Now().Unix() - run.StartedUnix
+	}
+	run.Monitoring = append(run.Monitoring, sample)
+	s.runs[id] = run
+}
+
+// ActiveRunIDs lists the runs currently executing, so the Controller knows which
+// ones to attach server-side samples to.
+func (s *MemoryStore) ActiveRunIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var ids []string
+	for id, run := range s.runs {
+		if run.Status == "running" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }

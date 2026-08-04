@@ -83,7 +83,27 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
 
 **남은 Phase 0 후속 과제**: `sampleSet`이 decimate된 실행은 percentile이 추정값이므로, UI에 그 사실을 표시해야 한다(현재 `Decimated` 플래그는 수집만 하고 화면에 쓰지 않는다).
 
-### Phase 1 — 판정을 신뢰할 수 있게 (서버측 상관)
+### Phase 1 — 판정을 신뢰할 수 있게 ✅ 완료
+
+가짜 Prometheus(vLLM 지표 형태)로 4개 시나리오를 돌려 판정이 각각 다르게 나오는 것을 확인했다:
+
+| 시나리오 | 포화 판정 | 신뢰성 | 병목 귀속 |
+| --- | --- | --- | --- |
+| 정상 (KV 91%, 대기 0, preemption 0) | `headroom` | true | — |
+| 포화 (대기 11, preemption 2.4/초) | `saturated` | true | — |
+| 스로틀링 (thermal violation, 클럭 1900→1200) | `headroom` | **false** — 온도 스로틀링 | — |
+| 클라이언트 병목 (서버 queue 10ms + prefill 20ms) | `headroom` | true | `client_or_network_bound` |
+
+구현 중 추가로 발견해 함께 넣은 것:
+
+- **`metrics_not_this_run` 상태.** 서버가 보고한 `queue + prefill`이 클라이언트 TTFT보다 크면, 그 지표는 우리 요청만의 것이 아니다(같은 서버의 다른 트래픽, 또는 다른 모델·인스턴스). 원래는 이 경우도 `server_bound`로 판정하면서 "181ms = 2400ms + 300ms" 같은 말이 안 되는 분해를 출력했다. 이제 별도 상태로 분리해 Prometheus 쿼리를 좁히라고 안내한다.
+- **absent ≠ 0.** `MonitoringSample`을 고정 필드에서 map으로 바꿨다. DCGM 프로파일링 필드는 드라이버·컨테이너에 따라 조용히 수집 실패하는데, 이를 0으로 보고하면 "GPU 유휴"로 읽힌다. 수집 실패는 `partial` 상태와 메시지로 표시한다.
+- **absent 지표 재탐침 backoff.** 매초 샘플링에서 없는 이름을 매번 다시 물으면 초당 수십 쿼리가 된다. 1분에 한 번만 재시도한다.
+- **리스트 응답에서 초당 시계열 제거.** 판정(요약)은 유지하고 원시 샘플만 뺀다. 대신 기록에서 실행을 선택하면 상세용으로 다시 가져온다.
+- **`max_num_seqs`를 운영자 입력으로.** 이 값이 있으면 "하드웨어 한계"와 "설정 한계"를 구분한다. 없으면 동시 실행이 멈춘 지점을 근거로 설정 한계 가능성을 알린다.
+
+<details>
+<summary>원래 계획 (참고)</summary>
 
 지금은 클라이언트 지연만 본다. 그래서 "모델이 느리다"와 "우리 클라이언트/LB가 느리다"를 구분할 수 없다.
 
@@ -106,6 +126,10 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
    - `DCGM_FI_PROF_*`는 DCP 모듈이 필요하고 일부 환경에서 조용히 실패한다. 0으로 보고하지 말고 **수집 실패로 표시**한다. 스크레이프 간격은 5초 이상.
    - `DCGM_FI_DEV_FB_USED`는 vLLM이 `gpu_memory_utilization`만큼 선점하므로 거의 상수다. **KV 압력 지표로 쓰면 안 된다.**
 10. **실행 provenance 기록.** 이게 없으면 실행 간 비교가 불가능하고 보고서는 일화(anecdote)가 된다: vLLM 버전, `max_num_seqs`, `max_num_batched_tokens`, `gpu_memory_utilization`, `block_size`, TP/PP 차수, APC on/off, chunked prefill on/off, 관측된 prefix 히트율, `ignore_eos`, ISL/OSL 분포. 일부는 `vllm:cache_config_info`에서 얻고, 나머지는 실행 설정에 입력 필드로 둔다.
+
+</details>
+
+**남은 Phase 1 후속 과제**: provenance(항목 10) 중 `max_num_seqs`만 입력받는다. `max_num_batched_tokens`·`gpu_memory_utilization`·`block_size`·TP 차수·APC on/off는 아직 기록하지 않으므로, 실행 간 비교의 근거가 완전하지 않다. `vllm:cache_config_info` 라벨에서 자동 수집하는 것을 우선 검토한다.
 
 ### Phase 2 — 용량 판정 방법론
 
