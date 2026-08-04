@@ -36,4 +36,8 @@ button.small { margin: 0; padding: 8px 12px; } table { width: 100%; border-colla
 .scroll-x { overflow-x:auto; }
 tr.row-at-risk td { background:#1d1409; }
 td.cell-at-risk { color:#ffb4a8; font-weight:700; }
+.config-summary b.unpinned { color:#f0d9a4; }
+.checkbox-field { grid-template-columns:1fr auto; align-items:start; gap:14px; }
+.checkbox-field input[type="checkbox"] { width:20px; height:20px; min-width:20px; margin-top:2px; cursor:pointer; }
+.warn-line code, .config-summary code, label code { padding:1px 5px; border-radius:4px; background:#0b171d; color:#8fc6ee; font-size:12px; }
 @media (max-width: 760px) { .summary, .filters, .workflow-grid, .workload-plan { grid-template-columns: 1fr; }.duration-advice { flex-direction:column; align-items:flex-start; }.preset-row, .scenario-row { flex-wrap: wrap; }.workflow-grid .workflow-choice, .workflow-choice.mixed { min-height:auto; flex-direction:column; align-items:flex-start; }.workflow-grid .workflow-choice button, .workflow-choice.mixed button { align-self:auto; }.operational-decision { flex-direction:column; }.decision-cause { white-space:normal; }.scenario-columns { display:none; }.scenario-task { display:flex; }.scenario-task input, .scenario-task input:nth-child(2) { width:100%; }.scenario-task .danger { width:auto; } }

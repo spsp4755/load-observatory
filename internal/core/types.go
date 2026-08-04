@@ -67,6 +67,10 @@ type RunConfig struct {
 	DrainSeconds             int            `json:"drain_seconds,omitempty"`
 	SteadyStateSeconds       int            `json:"steady_state_seconds,omitempty"`
 	MinCompletionPercent     float64        `json:"min_completion_percent,omitempty"`
+	// IgnoreEOS pins every response to exactly MaxTokens so TPOT and ITL are
+	// comparable between runs. It is a vLLM/SGLang extension, so it is opt-in:
+	// a server that rejects unknown fields would fail every request.
+	IgnoreEOS bool `json:"ignore_eos,omitempty"`
 }
 
 type LoadStage struct {
@@ -135,6 +139,20 @@ type ScenarioResult struct {
 	TTFT              Distribution `json:"ttft"`
 	OutputTokens      int64        `json:"output_tokens"`
 	OutputPerSecond   float64      `json:"output_per_second"`
+	Samples           *RunSamples  `json:"samples,omitempty"`
+}
+
+// RunSamples carries the raw measurements a shard collected. A percentile is not
+// a linear statistic, so it cannot be merged from per-shard percentiles: the
+// Controller pools these samples and computes each distribution exactly once.
+// Stripped from the stored result once the merge is done.
+type RunSamples struct {
+	Latency   []int64 `json:"latency,omitempty"`
+	TTFT      []int64 `json:"ttft,omitempty"`
+	TTFO      []int64 `json:"ttfo,omitempty"`
+	ITL       []int64 `json:"itl,omitempty"`
+	TPOT      []int64 `json:"tpot,omitempty"`
+	Decimated bool    `json:"decimated,omitempty"`
 }
 
 // RunProgress is the live once-a-second snapshot an Agent reports while a shard
@@ -192,6 +210,14 @@ type RunResult struct {
 	SteadySamples  int64            `json:"steady_state_samples"`
 	Scenarios      []ScenarioResult `json:"scenarios,omitempty"`
 	DrainedSeconds int64            `json:"drained_seconds,omitempty"`
+	Samples        *RunSamples      `json:"samples,omitempty"`
+	// MissingUsageResponses counts successful model responses that carried no
+	// usage field. Token metrics cannot be trusted for those: ContentChunks is a
+	// count of streamed content chunks, which is NOT a token count because a
+	// server may pack several tokens into one chunk.
+	MissingUsageResponses int64 `json:"missing_usage_responses,omitempty"`
+	ContentChunks         int64 `json:"content_chunks,omitempty"`
+	OutputLengthPinned    bool  `json:"output_length_pinned"`
 }
 
 type MonitoringSample struct {

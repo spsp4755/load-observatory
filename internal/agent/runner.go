@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"sort"
@@ -24,7 +25,51 @@ import (
 const (
 	maxTimelinePoints = core.MaxDurationSeconds + 600
 	maxSecondSamples  = 1000
+	// maxSamplesPerMetric bounds what one shard ships to the Controller for
+	// pooled percentile computation. ITL produces one sample per token, so this
+	// is reachable; sampleSet decimates uniformly rather than truncating.
+	maxSamplesPerMetric = 100000
 )
+
+// sampleSet keeps a bounded, evenly spread subset of the values it is given, so
+// the Controller can pool raw samples across shards and compute each percentile
+// exactly once without unbounded memory. When full it drops every other retained
+// value and halves its acceptance rate, which keeps coverage uniform across the
+// whole run instead of biased toward its beginning.
+type sampleSet struct {
+	values    []int64
+	stride    int64
+	seen      int64
+	decimated bool
+}
+
+func (s *sampleSet) add(value int64) {
+	if s.stride == 0 {
+		s.stride = 1
+	}
+	s.seen++
+	if s.seen%s.stride != 0 {
+		return
+	}
+	s.values = append(s.values, value)
+	if len(s.values) >= maxSamplesPerMetric {
+		kept := s.values[:0]
+		for i := 1; i < len(s.values); i += 2 {
+			kept = append(kept, s.values[i])
+		}
+		s.values = kept
+		s.stride *= 2
+		s.decimated = true
+	}
+}
+
+func (s *sampleSet) addAll(values []int64) {
+	for _, value := range values {
+		s.add(value)
+	}
+}
+
+func (s *sampleSet) len() int { return len(s.values) }
 
 const (
 	phaseWarmup   = "warmup"
@@ -47,8 +92,11 @@ type measurements struct {
 
 	// Samples from the steady-state window only. These feed every reported
 	// distribution, so ramp-up and warmup cannot flatter the percentiles.
-	latencies, ttfts, ttfos, itls, tpots []int64
+	latencies, ttfts, ttfos, itls, tpots sampleSet
 	steadySamples                        int64
+
+	// Token accounting trust: a response with no usage field cannot be counted.
+	missingUsage, contentChunks int64
 
 	statusCounts  map[string]int64
 	errors        []string
@@ -74,12 +122,14 @@ type timelineMeasurement struct {
 }
 type scenarioMeasurement struct {
 	issued, completed, failures, cancelled int64
-	latencies, ttfts                       []int64
+	latencies, ttfts                       sampleSet
 	outputTokens                           int64
 }
 type modelTiming struct {
 	ttft, ttfo, tpot int64
 	itls             []int64
+	chunks           int64
+	usageReported    bool
 }
 
 // attempt carries the per-request bookkeeping from issue time to record time.
@@ -144,7 +194,7 @@ func RunTargetWithProgress(ctx context.Context, target core.Target, config core.
 		}
 	}
 	m.setPhase(phaseDone)
-	return m.result()
+	return m.result(config)
 }
 
 // runStage issues load for the stage duration, then stops issuing and lets the
@@ -333,9 +383,14 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	if target.Type == core.TargetTypeModel || strings.HasSuffix(target.URL, "/v1/chat/completions") {
 		method = http.MethodPost
 		if varied {
-			prompt += fmt.Sprintf("\n\n[Load Observatory variation run=%s request=%d]", config.WorkloadID, sequence)
+			prompt = variationPrefix(config.WorkloadID, sequence) + prompt
 		}
-		payload, err := json.Marshal(map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "max_tokens": maxTokens, "stream": target.Type == core.TargetTypeModel, "stream_options": map[string]bool{"include_usage": true}})
+		request := map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "max_tokens": maxTokens, "stream": target.Type == core.TargetTypeModel, "stream_options": map[string]bool{"include_usage": true}}
+		if config.IgnoreEOS {
+			request["ignore_eos"] = true
+			request["min_tokens"] = maxTokens
+		}
+		payload, err := json.Marshal(request)
 		if err != nil {
 			m.recordTransportError(call, "encode request")
 			return 0
@@ -384,7 +439,7 @@ func readModelResponse(response *http.Response, started time.Time) (modelTiming,
 	if !strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
 		usage, err := readModelJSON(response.Body)
 		elapsed := time.Since(started).Milliseconds()
-		return modelTiming{ttft: elapsed, ttfo: elapsed}, usage, err
+		return modelTiming{ttft: elapsed, ttfo: elapsed, usageReported: usage.Completion > 0}, usage, err
 	}
 	var usage core.TokenUsage
 	timing := modelTiming{}
@@ -412,6 +467,7 @@ func readModelResponse(response *http.Response, started time.Time) (modelTiming,
 		if len(event.Choices) > 0 {
 			delta := event.Choices[0].Delta
 			if delta.Content != "" || delta.ReasoningContent != "" {
+				timing.chunks++
 				if timing.ttft == 0 {
 					timing.ttft = now.Sub(started).Milliseconds()
 				}
@@ -424,7 +480,10 @@ func readModelResponse(response *http.Response, started time.Time) (modelTiming,
 				}
 			}
 		}
-		usage = event.Usage.tokenUsage()
+		if reported := event.Usage.tokenUsage(); reported.Completion > 0 || reported.Prompt > 0 {
+			usage = reported
+			timing.usageReported = true
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return timing, usage, fmt.Errorf("read model stream: %w", err)
@@ -468,6 +527,22 @@ func readModelJSON(body io.Reader) (core.TokenUsage, error) {
 		return core.TokenUsage{}, fmt.Errorf("decode model response: %w", err)
 	}
 	return payload.Usage.tokenUsage(), nil
+}
+
+// variationPrefix builds the cache-bypass nonce that goes in FRONT of the
+// prompt. Prefix caching (on by default in vLLM since v0.6.0) reuses only
+// *complete* leading blocks of block_size tokens (16 by default), so:
+//   - a trailing nonce leaves the whole prompt cached and never measures prefill
+//   - a leading nonce with a constant preamble still lets the first block match
+//   - two shards counting from 1 with the same run id emit identical nonces and
+//     hit each other's cache
+//
+// So the hash of (workload, sequence) leads, putting unique bytes at token ~2.
+// The readable part follows for log correlation.
+func variationPrefix(workloadID string, sequence int64) string {
+	digest := fnv.New32a()
+	_, _ = fmt.Fprintf(digest, "%s#%d", workloadID, sequence)
+	return fmt.Sprintf("[LO-%08x %s#%d]\n\n", digest.Sum32(), workloadID, sequence)
 }
 
 func (m *measurements) nextWorkload(config core.RunConfig) (int64, bool, string, string, time.Duration, int) {
@@ -604,12 +679,14 @@ func (m *measurements) reset() {
 	m.completedSessions = 0
 	m.stopped = false
 	m.guardrail = ""
-	m.latencies = nil
-	m.ttfts = nil
-	m.ttfos = nil
-	m.itls = nil
-	m.tpots = nil
+	m.latencies = sampleSet{}
+	m.ttfts = sampleSet{}
+	m.ttfos = sampleSet{}
+	m.itls = sampleSet{}
+	m.tpots = sampleSet{}
 	m.steadySamples = 0
+	m.missingUsage = 0
+	m.contentChunks = 0
 	m.statusCounts = map[string]int64{}
 	m.errors = nil
 	m.tokens = core.TokenUsage{}
@@ -652,18 +729,22 @@ func (m *measurements) recordSuccess(call attempt, latency int64, timing modelTi
 	m.successes++
 	if call.steady {
 		m.steadySamples++
-		m.latencies = append(m.latencies, latency)
-		m.ttfts = append(m.ttfts, timing.ttft)
-		m.ttfos = append(m.ttfos, timing.ttfo)
-		m.itls = append(m.itls, timing.itls...)
+		m.latencies.add(latency)
+		m.ttfts.add(timing.ttft)
+		m.ttfos.add(timing.ttfo)
+		m.itls.addAll(timing.itls)
 		if timing.tpot > 0 {
-			m.tpots = append(m.tpots, timing.tpot)
+			m.tpots.add(timing.tpot)
 		}
 	}
 	m.statusCounts[fmt.Sprintf("%d", status)]++
 	m.tokens.Prompt += usage.Prompt
 	m.tokens.Completion += usage.Completion
 	m.tokens.Reasoning += usage.Reasoning
+	m.contentChunks += timing.chunks
+	if !timing.usageReported {
+		m.missingUsage++
+	}
 	if meetsSLO(latency, timing, usage, config) {
 		m.goodput++
 	}
@@ -672,8 +753,8 @@ func (m *measurements) recordSuccess(call attempt, latency int64, timing modelTi
 		entry.completed++
 		entry.outputTokens += usage.Completion
 		if call.steady {
-			entry.latencies = append(entry.latencies, latency)
-			entry.ttfts = append(entry.ttfts, timing.ttft)
+			entry.latencies.add(latency)
+			entry.ttfts.add(timing.ttft)
 		}
 	}
 	m.recordTimelineLocked(latency, timelineSuccess)
@@ -685,13 +766,13 @@ func (m *measurements) maybeStopLocked(config core.RunConfig) {
 		return
 	}
 	message := ""
-	if config.MaxP95Millis > 0 && p95(m.latencies) > config.MaxP95Millis {
+	if config.MaxP95Millis > 0 && p95(m.latencies.values) > config.MaxP95Millis {
 		message = "E2E P95 SLO exceeded"
 	}
-	if message == "" && config.MaxTTFTP95Millis > 0 && p95(m.ttfts) > config.MaxTTFTP95Millis {
+	if message == "" && config.MaxTTFTP95Millis > 0 && p95(m.ttfts.values) > config.MaxTTFTP95Millis {
 		message = "TTFT P95 SLO exceeded"
 	}
-	if message == "" && config.MaxTTPOTP95Millis > 0 && p95(m.tpots) > config.MaxTTPOTP95Millis {
+	if message == "" && config.MaxTTPOTP95Millis > 0 && p95(m.tpots.values) > config.MaxTTPOTP95Millis {
 		message = "TPOT P95 SLO exceeded"
 	}
 	if message == "" && config.MinGoodputPercent > 0 && float64(m.goodput)*100/float64(m.successes) < config.MinGoodputPercent {
@@ -823,7 +904,7 @@ func (m *measurements) recordTimelineLocked(latency int64, outcome timelineOutco
 	}
 }
 
-func (m *measurements) result() core.RunResult {
+func (m *measurements) result(config core.RunConfig) core.RunResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	completed := m.successes + m.httpFailures
@@ -854,25 +935,37 @@ func (m *measurements) result() core.RunResult {
 	scenarios := make([]core.ScenarioResult, 0, len(m.scenarioOrder))
 	for _, name := range m.scenarioOrder {
 		entry := m.scenarios[name]
-		item := core.ScenarioResult{Name: name, Issued: entry.issued, Completed: entry.completed, Failures: entry.failures, Cancelled: entry.cancelled, Latency: distribution(entry.latencies), TTFT: distribution(entry.ttfts), OutputTokens: entry.outputTokens}
+		item := core.ScenarioResult{Name: name, Issued: entry.issued, Completed: entry.completed, Failures: entry.failures, Cancelled: entry.cancelled, Latency: distribution(entry.latencies.values), TTFT: distribution(entry.ttfts.values), OutputTokens: entry.outputTokens}
 		if entry.issued > 0 {
 			item.CompletionPercent = float64(entry.completed) * 100 / float64(entry.issued)
 		}
 		if elapsed > 0 {
 			item.OutputPerSecond = float64(entry.outputTokens) / elapsed
 		}
+		if entry.latencies.len() > 0 || entry.ttfts.len() > 0 {
+			item.Samples = &core.RunSamples{Latency: entry.latencies.values, TTFT: entry.ttfts.values, Decimated: entry.latencies.decimated || entry.ttfts.decimated}
+		}
 		scenarios = append(scenarios, item)
 	}
+	var samples *core.RunSamples
+	if m.latencies.len() > 0 || m.ttfts.len() > 0 || m.itls.len() > 0 {
+		samples = &core.RunSamples{
+			Latency: m.latencies.values, TTFT: m.ttfts.values, TTFO: m.ttfos.values,
+			ITL: m.itls.values, TPOT: m.tpots.values,
+			Decimated: m.latencies.decimated || m.ttfts.decimated || m.ttfos.decimated || m.itls.decimated || m.tpots.decimated,
+		}
+	}
 	return core.RunResult{
-		Successes: m.successes, Failures: failures, P95Millis: p95(m.latencies), TTFTP95Millis: p95(m.ttfts), Total: total,
-		ThroughputRPS: float64(total) / elapsed, Latency: distribution(m.latencies), TTFT: distribution(m.ttfts),
-		TTFO: distribution(m.ttfos), ITL: distribution(m.itls), TPOT: distribution(m.tpots), Tokens: tokens,
+		Successes: m.successes, Failures: failures, P95Millis: p95(m.latencies.values), TTFTP95Millis: p95(m.ttfts.values), Total: total,
+		ThroughputRPS: float64(total) / elapsed, Latency: distribution(m.latencies.values), TTFT: distribution(m.ttfts.values),
+		TTFO: distribution(m.ttfos.values), ITL: distribution(m.itls.values), TPOT: distribution(m.tpots.values), Tokens: tokens,
 		GoodputPercent: goodput, DroppedArrivals: m.dropped, StoppedByGuardrail: m.stopped, GuardrailMessage: m.guardrail,
 		AgentSessions: m.sessions, CompletedSessions: m.completedSessions, StatusCounts: m.statusCounts, Errors: m.errors,
 		Timeline: timeline, Issued: m.issued, Completed: completed, Cancelled: m.cancelled, HTTPFailures: m.httpFailures,
 		TransportErrors: m.transportErrors, CompletionPercent: completionPercent,
 		SteadySeconds: int64(m.steadyAfter.Seconds()), SteadySamples: m.steadySamples, Scenarios: scenarios,
-		DrainedSeconds: m.drainedSeconds.Load(),
+		DrainedSeconds: m.drainedSeconds.Load(), Samples: samples,
+		MissingUsageResponses: m.missingUsage, ContentChunks: m.contentChunks, OutputLengthPinned: config.IgnoreEOS,
 	}
 }
 func p95(values []int64) int64 {

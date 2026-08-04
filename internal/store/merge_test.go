@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/spsp4755/load-observatory/internal/core"
@@ -112,4 +113,77 @@ func shardIDs(memory *MemoryStore, runID string) []string {
 		}
 	}
 	return ids
+}
+
+// The case max(p95) gets badly wrong: a tiny shard with terrible latency next to
+// a large shard with good latency. The true P95 is dominated by the large shard,
+// but max(p95) reports the small shard's number.
+func TestPooledSamplesGiveTheTrueP95NotTheWorstShardP95(t *testing.T) {
+	memory := NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
+	run := memory.CreateRun(core.RunConfig{TargetID: target.ID, Mode: core.LoadModeVU, VUs: 4, DurationSeconds: 2, Shards: 2})
+	shards := shardIDs(memory, run.ID)
+
+	// Shard A: 99 requests at 100ms. Shard B: 1 request at 5000ms.
+	big := make([]int64, 99)
+	for i := range big {
+		big[i] = 100
+	}
+	memory.CompleteShard(shards[0], core.RunResult{
+		Successes: 99, Total: 99, Issued: 99, Completed: 99, SteadySamples: 99,
+		Latency: core.Distribution{P95Millis: 100, MinMillis: 100, MaxMillis: 100},
+		Samples: &core.RunSamples{Latency: big, TTFT: big},
+	})
+	completed, _ := memory.CompleteShard(shards[1], core.RunResult{
+		Successes: 1, Total: 1, Issued: 1, Completed: 1, SteadySamples: 1,
+		Latency: core.Distribution{P95Millis: 5000, MinMillis: 5000, MaxMillis: 5000},
+		Samples: &core.RunSamples{Latency: []int64{5000}, TTFT: []int64{5000}},
+	})
+
+	// True P95 over the pooled 100 samples is 100ms, not 5000ms.
+	if got := completed.Result.Latency.P95Millis; got != 100 {
+		t.Fatalf("pooled P95 should be 100ms (99%% of traffic), got %dms", got)
+	}
+	if got := completed.Result.Latency.MaxMillis; got != 5000 {
+		t.Fatalf("max should still surface the outlier: got %dms", got)
+	}
+	if completed.Result.LatencyScope != "pooled_samples" {
+		t.Fatalf("result does not declare that percentiles were pooled: %q", completed.Result.LatencyScope)
+	}
+}
+
+// Raw samples exist only to be pooled; they must not reach the API or snapshot.
+func TestRawSamplesAreStrippedAfterMerging(t *testing.T) {
+	memory := NewMemoryStore()
+	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})
+	run := memory.CreateRun(core.RunConfig{TargetID: target.ID, Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, Shards: 1})
+	shards := shardIDs(memory, run.ID)
+
+	completed, _ := memory.CompleteShard(shards[0], core.RunResult{
+		Successes: 2, Total: 2, Issued: 2, Completed: 2, SteadySamples: 2,
+		Samples: &core.RunSamples{Latency: []int64{10, 20}, TTFT: []int64{1, 2}},
+		Scenarios: []core.ScenarioResult{{
+			Name: "short", Issued: 2, Completed: 2,
+			Samples: &core.RunSamples{Latency: []int64{10, 20}, TTFT: []int64{1, 2}},
+		}},
+	})
+	if completed.Result.Samples != nil {
+		t.Fatal("raw samples leaked into the stored run result")
+	}
+	for _, scenario := range completed.Result.Scenarios {
+		if scenario.Samples != nil {
+			t.Fatalf("raw samples leaked into scenario %q", scenario.Name)
+		}
+	}
+	// Scenario percentiles must still have been computed from those samples.
+	if completed.Result.Scenarios[0].Latency.P95Millis == 0 {
+		t.Fatal("scenario distribution was not computed before samples were stripped")
+	}
+	snapshot, err := memory.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(snapshot, []byte(`"samples"`)) {
+		t.Fatal("raw samples were persisted into the snapshot")
+	}
 }

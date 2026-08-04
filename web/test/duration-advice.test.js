@@ -54,3 +54,13 @@ test("a steady-state start at or past the run duration leaves nothing to measure
   assert.equal(advice.invalid, true);
   assert.match(advice.message, /측정할 구간이 남지 않습니다/);
 });
+
+test("an unpinned output length makes every time estimate an upper bound only", () => {
+  const unpinned = estimateWorkload({ outputBudget: 20480, durationSeconds: 600, steadyStateSeconds: 60, drainSeconds: 300 });
+  assert.equal(unpinned.upperBoundOnly, true);
+  assert.match(unpinned.message, /상한/);
+  const pinned = estimateWorkload({ outputBudget: 20480, durationSeconds: 600, steadyStateSeconds: 60, drainSeconds: 300, outputLengthPinned: true });
+  assert.equal(pinned.upperBoundOnly, false);
+  assert.doesNotMatch(pinned.message, /상한/);
+  assert.equal(pinned.secondsPerUserCycle, unpinned.secondsPerUserCycle, "the estimate itself is unchanged, only its confidence");
+});

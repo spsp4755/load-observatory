@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -243,7 +244,37 @@ func (s *Server) checkTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "target returned "+response.Status, http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status_code": response.StatusCode, "latency_millis": time.Since(started).Milliseconds()})
+	result := map[string]any{"ok": true, "status_code": response.StatusCode, "latency_millis": time.Since(started).Milliseconds()}
+	if target.Type == core.TargetTypeModel {
+		result["supports_ignore_eos"] = probeIgnoreEOS(ctx, target)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// probeIgnoreEOS reports whether the target accepts the vLLM/SGLang ignore_eos
+// extension. Pinning output length makes TPOT and ITL comparable between runs,
+// but a server that rejects unknown fields would fail every request, so the
+// operator needs to know before enabling it.
+func probeIgnoreEOS(ctx context.Context, target core.Target) bool {
+	payload, err := json.Marshal(map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}}, "max_tokens": 1, "stream": false, "ignore_eos": true, "min_tokens": 1})
+	if err != nil {
+		return false
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.URL, bytes.NewReader(payload))
+	if err != nil {
+		return false
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if target.APIKey != "" {
+		request.Header.Set("Authorization", "Bearer "+target.APIKey)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusBadRequest
 }
 
 func (s *Server) deleteTarget(w http.ResponseWriter, r *http.Request) {

@@ -57,7 +57,19 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
 
 ## 단계별 계획
 
-### Phase 0 — 지금 틀린 숫자 고치기 (최우선, 소규모)
+### Phase 0 — 지금 틀린 숫자 고치기 ✅ 완료
+
+아래 4개는 구현·검증을 마쳤다. 느린 스트리밍 모델 + 2 샤드 실측으로 확인: 프롬프트 앞 8자 공유 **0/112**, `ignore_eos` **112/112**, `latency_scope=pooled_samples`, 원시 표본 API·스냅샷 미노출.
+
+구현 중 추가로 발견해 함께 고친 것:
+
+- **nonce의 엔트로피 위치.** 앞에 붙이는 것만으로는 부족했다. `[Load Observatory variation run=... request=N]`은 앞 ~14토큰이 상수라서 **첫 16토큰 블록이 여전히 캐시 히트**할 수 있었다. 이제 `(workloadID, sequence)`의 FNV 해시를 맨 앞에 두어(`[LO-44ba1c3e run-5-shard-3#77]`) 토큰 2번째부터 달라진다.
+- **샤드 간 nonce 충돌.** 두 샤드가 각자 1부터 카운트하면서 `WorkloadID`가 동일한 run ID였기 때문에 **서로 똑같은 프롬프트를 만들어 상대 샤드의 캐시를 히트**했다. 실측에서 112건 중 14건이 이 경로였다. `ClaimRun`에서 `WorkloadID`에 샤드 ID를 붙여 해결.
+- **`ignore_eos`는 기본 OFF로 결정.** 폐쇄망에서는 사내 모델 서버의 종류·버전을 통제할 수 없고, 모르는 필드를 거부하는 서버라면 **모든 요청이 400으로 실패**한다. 대신 「연결 확인」이 `supports_ignore_eos`를 탐침해 알려주고, 끈 상태의 결과에는 "TPOT·ITL 비교 불가" 경고를 남긴다.
+- **percentile 병합은 원시 표본 방식(Option A) 채택.** 새 의존성 없음. ITL은 토큰당 1개라 표본이 커질 수 있어, 상한 도달 시 앞부분을 자르지 않고 **균일하게 decimate**한다(`sampleSet`).
+
+<details>
+<summary>원래 계획 (참고)</summary>
 
 1. **prefix cache nonce를 프롬프트 맨 앞으로.** `bypass`가 실제로 cold prefill이 되게 한다. `reuse`/`mixed`/`bypass`의 의미를 문서와 UI 툴팁에 명시.
 2. **`ignore_eos` 옵션 추가** (기본 on, 끌 수 있게). `max_tokens`와 함께 출력 길이를 고정해 TPOT/ITL이 실행 간 비교 가능해진다. 끄면 결과에 "출력 길이 미고정" 배지를 남긴다.
@@ -66,6 +78,10 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
    - **Option B (상한 보장 필요 시):** `github.com/HdrHistogram/hdrhistogram-go`, `New(1, 600_000_000, 3)`(µs, 1µs–600s, 0.1% 정밀도). `Encode(2)`가 보통 1.5 KB 미만이고 bin 경계가 동일해 병합 결과가 단일 프로세스 결과와 **비트 단위로 동일**. cgo 없음 → `go mod vendor`로 폐쇄망 반입 가능.
    - Option A로 시작하고, 고 RPS 요구가 실제로 생기면 B로 옮긴다.
 4. **`usage` 부재 시 경고.** 이미 `include_usage: true`를 보내는 것은 **폐쇄망에서 올바른 선택**(tokenizer 불필요, 서버 권위). 다만 `usage`가 안 오면 현재는 조용히 `completion=0`이 되어 tok/s가 0이 된다. 하드 경고를 띄우고, 청크 수 기반 추정으로 대체할 때는 **"토큰"이 아니라 "청크"로 명명**한다. (서버가 청크 하나에 여러 토큰을 담으므로 청크 수 ≠ 토큰 수.)
+
+</details>
+
+**남은 Phase 0 후속 과제**: `sampleSet`이 decimate된 실행은 percentile이 추정값이므로, UI에 그 사실을 표시해야 한다(현재 `Decimated` 플래그는 수집만 하고 화면에 쓰지 않는다).
 
 ### Phase 1 — 판정을 신뢰할 수 있게 (서버측 상관)
 

@@ -14,6 +14,7 @@ export function estimateWorkload({
   steadyStateSeconds = 0,
   drainSeconds = 0,
   callsPerUser = 1,
+  outputLengthPinned = false,
 } = {}) {
   const rate = Number(tokensPerSecond) > 0 ? Number(tokensPerSecond) : defaultTokensPerSecond;
   const budget = Math.max(0, Number(outputBudget) || 0);
@@ -41,6 +42,9 @@ export function estimateWorkload({
     recommendedDurationSeconds,
     recommendedDrainSeconds,
     drainCoversResponse: drain >= secondsPerUserCycle,
+    // Without ignore_eos, max_tokens is only a cap: the model usually stops at
+    // EOS well before it, so every time estimate here is an upper bound.
+    upperBoundOnly: !outputLengthPinned,
   };
 
   // The controller rejects this outright, so say why before the request is sent.
@@ -59,7 +63,7 @@ export function estimateWorkload({
     return {
       ...estimate,
       level: "error",
-      message: `출력 ${budget.toLocaleString()} 토큰은 초당 ${rate} 토큰 기준 한 번에 약 ${formatSeconds(secondsPerUserCycle)} 걸립니다. 현재 측정 구간 ${formatSeconds(steadyWindowSeconds)}에는 응답 한 건도 끝나지 않아 이 결과로는 수용 가능한 사용자 수를 판정할 수 없습니다. 실행 시간을 ${formatSeconds(recommendedDurationSeconds)} 이상으로 올리세요.`,
+      message: `출력 ${budget.toLocaleString()} 토큰은 초당 ${rate} 토큰 기준 한 번에 약 ${formatSeconds(secondsPerUserCycle)} 걸립니다${estimate.upperBoundOnly ? " (출력 길이 미고정이므로 상한)" : ""}. 현재 측정 구간 ${formatSeconds(steadyWindowSeconds)}에는 응답 한 건도 끝나지 않아 이 결과로는 수용 가능한 사용자 수를 판정할 수 없습니다. 실행 시간을 ${formatSeconds(recommendedDurationSeconds)} 이상으로 올리세요.`,
     };
   }
   if (cyclesInSteadyWindow < 2) {
@@ -76,7 +80,7 @@ export function estimateWorkload({
       message: `종료 유예가 ${formatSeconds(drain)}로 응답 1건(약 ${formatSeconds(secondsPerUserCycle)})보다 짧습니다. 종료 시점에 진행 중인 요청이 취소로 집계됩니다. 유예를 ${formatSeconds(recommendedDrainSeconds)} 이상으로 두세요.`,
     };
   }
-  return { ...estimate, level: "ok", message: `측정 구간에 응답이 약 ${cyclesInSteadyWindow.toFixed(1)}회 들어갑니다.` };
+  return { ...estimate, level: "ok", message: `측정 구간에 응답이 약 ${cyclesInSteadyWindow.toFixed(1)}회 들어갑니다.${estimate.upperBoundOnly ? " (출력 길이 미고정이므로 상한 기준입니다.)" : ""}` };
 }
 
 // workloadShape derives the output budget and call count one virtual user gets

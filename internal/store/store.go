@@ -383,6 +383,10 @@ func (s *MemoryStore) ClaimRun() (core.Assignment, bool) {
 		s.shards[shardID] = shard
 		run.Status = "running"
 		s.runs[run.ID] = run
+		// Each shard counts its own requests from 1, so the cache-bypass nonce
+		// must carry the shard ID too or two shards emit identical prompts and
+		// hit each other's prefix cache.
+		run.Config.WorkloadID = run.ID + "-" + shard.ID
 		count := run.Config.Shards
 		if count < 1 {
 			count = 1
@@ -444,7 +448,10 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 	var distributionWeight int64
 	timeline := map[int64]core.TimelinePoint{}
 	scenarios := map[string]*core.ScenarioResult{}
+	scenarioSamples := map[string]*core.RunSamples{}
 	var scenarioOrder []string
+	pooled := &core.RunSamples{}
+	pooledAny := false
 	for shardID, item := range s.shards {
 		if item.RunID != run.ID {
 			continue
@@ -464,6 +471,13 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.SteadySamples += value.SteadySamples
 		merged.SteadySeconds = max(merged.SteadySeconds, value.SteadySeconds)
 		merged.DrainedSeconds = max(merged.DrainedSeconds, value.DrainedSeconds)
+		merged.MissingUsageResponses += value.MissingUsageResponses
+		merged.ContentChunks += value.ContentChunks
+		merged.OutputLengthPinned = value.OutputLengthPinned
+		if value.Samples != nil {
+			pooledAny = true
+			appendSamples(pooled, value.Samples)
+		}
 		merged.Tokens.Prompt += value.Tokens.Prompt
 		merged.Tokens.Completion += value.Tokens.Completion
 		merged.Tokens.Reasoning += value.Tokens.Reasoning
@@ -479,8 +493,12 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 			if scenarios[scenario.Name] == nil {
 				scenarios[scenario.Name] = &core.ScenarioResult{Name: scenario.Name}
 				scenarioOrder = append(scenarioOrder, scenario.Name)
+				scenarioSamples[scenario.Name] = &core.RunSamples{}
 			}
 			mergeScenario(scenarios[scenario.Name], scenario)
+			if scenario.Samples != nil {
+				appendSamples(scenarioSamples[scenario.Name], scenario.Samples)
+			}
 		}
 		// Weight percentiles by the steady-state samples they were computed from,
 		// falling back to successes for results from an older Agent.
@@ -504,11 +522,27 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		}
 	}
 	merged.Timeline = sortedTimeline(timeline)
+	// A percentile is not a linear statistic, so recompute every distribution from
+	// the pooled raw samples rather than from the per-shard percentiles. Falls back
+	// to the weighted per-shard merge only for results that carry no samples.
+	if pooledAny {
+		merged.Latency = distribution(pooled.Latency)
+		merged.TTFT = distribution(pooled.TTFT)
+		merged.TTFO = distribution(pooled.TTFO)
+		merged.ITL = distribution(pooled.ITL)
+		merged.TPOT = distribution(pooled.TPOT)
+		merged.LatencyScope = "pooled_samples"
+	}
 	for _, name := range scenarioOrder {
 		scenario := *scenarios[name]
 		if scenario.Issued > 0 {
 			scenario.CompletionPercent = float64(scenario.Completed) * 100 / float64(scenario.Issued)
 		}
+		if samples := scenarioSamples[name]; samples != nil && len(samples.Latency) > 0 {
+			scenario.Latency = distribution(samples.Latency)
+			scenario.TTFT = distribution(samples.TTFT)
+		}
+		scenario.Samples = nil
 		merged.Scenarios = append(merged.Scenarios, scenario)
 	}
 	merged.P95Millis, merged.TTFTP95Millis = merged.Latency.P95Millis, merged.TTFT.P95Millis
@@ -518,18 +552,73 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 	if merged.Issued > 0 {
 		merged.CompletionPercent = float64(merged.Completed) * 100 / float64(merged.Issued)
 	}
-	if run.Config.Shards > 1 {
+	if run.Config.Shards > 1 && !pooledAny {
 		merged.LatencyScope = "worst_shard_p95"
 	}
 	if run.Config.DurationSeconds > 0 {
 		merged.ThroughputRPS = float64(merged.Total) / float64(run.Config.DurationSeconds)
 		merged.Tokens.OutputPerSecond = float64(merged.Tokens.Completion) / float64(run.Config.DurationSeconds)
 	}
+	// Raw samples exist only to be pooled. Drop them from the stored result and
+	// from the per-shard results so they never reach the snapshot or the API.
+	merged.Samples = nil
 	run.Status = "completed"
 	run.Result = merged
 	s.runs[run.ID] = run
 	s.clearRunProgressLocked(run.ID)
+	s.clearShardSamplesLocked(run.ID)
 	return run, true
+}
+
+func (s *MemoryStore) clearShardSamplesLocked(runID string) {
+	for shardID, shard := range s.shards {
+		if shard.RunID != runID {
+			continue
+		}
+		if result, ok := s.shardResults[shardID]; ok {
+			result.Samples = nil
+			for i := range result.Scenarios {
+				result.Scenarios[i].Samples = nil
+			}
+			s.shardResults[shardID] = result
+		}
+	}
+}
+
+func appendSamples(into *core.RunSamples, from *core.RunSamples) {
+	into.Latency = append(into.Latency, from.Latency...)
+	into.TTFT = append(into.TTFT, from.TTFT...)
+	into.TTFO = append(into.TTFO, from.TTFO...)
+	into.ITL = append(into.ITL, from.ITL...)
+	into.TPOT = append(into.TPOT, from.TPOT...)
+	if from.Decimated {
+		into.Decimated = true
+	}
+}
+
+// distribution computes exact order statistics over pooled samples.
+func distribution(values []int64) core.Distribution {
+	if len(values) == 0 {
+		return core.Distribution{}
+	}
+	sorted := append([]int64(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	var sum int64
+	for _, value := range sorted {
+		sum += value
+	}
+	return core.Distribution{
+		MinMillis: sorted[0],
+		AvgMillis: sum / int64(len(sorted)),
+		P50Millis: percentile(sorted, 50),
+		P95Millis: percentile(sorted, 95),
+		P99Millis: percentile(sorted, 99),
+		MaxMillis: sorted[len(sorted)-1],
+	}
+}
+
+func percentile(sorted []int64, percentage int) int64 {
+	return sorted[(len(sorted)*percentage+99)/100-1]
 }
 
 // mergeTimelinePoint sums the counters of the same elapsed second across shards

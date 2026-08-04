@@ -47,6 +47,7 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   drainSeconds: "120",
   steadyStateSeconds: "60",
   minCompletionPercent: "95",
+  ignoreEOS: false,
   tokensPerSecond: String(defaultTokensPerSecond),
   maxErrorPercent: "2",
   maxP95Millis: "2000",
@@ -269,6 +270,12 @@ function Details({ run, onCancel }) {
             최대 출력 <b>{run.config.max_tokens} 토큰</b>
           </span>
           <span>
+            출력 길이{" "}
+            <b className={result.output_length_pinned ? "" : "unpinned"}>
+              {result.output_length_pinned ? "고정 (ignore_eos)" : "미고정"}
+            </b>
+          </span>
+          <span>
             캐시 <b>{policyText(run)}</b>
           </span>
         </div>
@@ -346,9 +353,20 @@ function Details({ run, onCancel }) {
           )
         )}
         {result.latency_scope === "worst_shard_p95" && (
+          <p className="warn-line">
+            이 실행의 P95는 각 샤드 P95 중 가장 높은 값입니다. percentile은 선형 통계가 아니어서 샤드별 P95로는 전체 P95를
+            계산할 수 없습니다. 최신 Agent로 다시 측정하면 원시 표본을 합산해 정확한 값을 냅니다.
+          </p>
+        )}
+        {result.latency_scope === "pooled_samples" && (
           <p className="muted">
-            분산 실행의 P95는 각 샤드 P95 중 가장 높은 값입니다. 안정성 판정을
-            위한 보수적 기준입니다.
+            분산 실행의 percentile은 모든 샤드의 원시 표본을 합산해 한 번에 계산했습니다. 단일 프로세스 실행과 동일한 값입니다.
+          </p>
+        )}
+        {!result.output_length_pinned && result.issued > 0 && (
+          <p className="warn-line">
+            출력 길이가 고정되지 않아 응답마다 생성 토큰 수가 다릅니다. <b>TPOT·ITL을 다른 실행과 비교할 수 없습니다.</b>{" "}
+            비교가 필요하면 실행 설정에서 「출력 길이 고정(ignore_eos)」을 켜세요.
           </p>
         )}
         <div className="distribution">
@@ -374,18 +392,28 @@ function Details({ run, onCancel }) {
           </div>
         </div>
       </section>
-      {tokens.completion > 0 && (
+      {(tokens.completion > 0 || result.missing_usage_responses > 0) && (
         <section className="panel">
           <h3>모델 출력 분석</h3>
-          <div className="metrics">
-            <Metric label="입력 토큰" value={tokens.prompt} />
-            <Metric label="출력 토큰" value={tokens.completion} />
-            <Metric label="추론 토큰" value={tokens.reasoning || "—"} />
-            <Metric
-              label="출력 속도"
-              value={`${tokens.output_per_second?.toFixed(1) || 0} tok/s`}
-            />
-          </div>
+          {result.missing_usage_responses > 0 && (
+            <p className="warn-line">
+              성공 응답 {result.missing_usage_responses}건이 <code>usage</code> 필드를 반환하지 않았습니다. 이 응답의 토큰
+              수는 알 수 없어 아래 토큰 지표와 tok/s를 신뢰할 수 없습니다. 참고용으로 수신한 스트림 청크는{" "}
+              <b>{(result.content_chunks || 0).toLocaleString()}개</b>이며, 서버가 청크 하나에 여러 토큰을 담을 수 있으므로{" "}
+              <b>청크 수는 토큰 수가 아닙니다.</b> 대상이 <code>stream_options.include_usage</code>를 지원하는지 확인하세요.
+            </p>
+          )}
+          {tokens.completion > 0 && (
+            <div className="metrics">
+              <Metric label="입력 토큰" value={tokens.prompt} />
+              <Metric label="출력 토큰" value={tokens.completion} />
+              <Metric label="추론 토큰" value={tokens.reasoning || "—"} />
+              <Metric
+                label="출력 속도"
+                value={`${tokens.output_per_second?.toFixed(1) || 0} tok/s`}
+              />
+            </div>
+          )}
         </section>
       )}
       {scenarios.length > 0 && (
@@ -1027,6 +1055,23 @@ function TestSettings({
           onChange={update}
         />
       </label>
+      <label className="wide checkbox-field">
+        <span>
+          출력 길이 고정 (<code>ignore_eos</code>)
+          <small>
+            모든 응답이 정확히 최대 토큰까지 생성되어 TPOT·ITL을 실행 간 비교할 수 있습니다. vLLM·SGLang 확장이므로, 대상이
+            모르는 필드를 거부하면 모든 요청이 실패합니다. 「모델 등록 → 연결 확인」에서 지원 여부를 먼저 확인하세요.
+          </small>
+        </span>
+        <input
+          name="ignoreEOS"
+          type="checkbox"
+          checked={Boolean(form.ignoreEOS)}
+          onChange={(event) =>
+            update({ target: { name: "ignoreEOS", value: event.target.checked } })
+          }
+        />
+      </label>
       <label>
         허용 오류율 (%)
         <input
@@ -1295,6 +1340,7 @@ export default function App() {
     durationSeconds: form.duration,
     steadyStateSeconds: form.steadyStateSeconds,
     drainSeconds: form.drainSeconds,
+    outputLengthPinned: Boolean(form.ignoreEOS),
   });
   const applyAdvice = () =>
     setForm((current) => ({
@@ -1422,8 +1468,14 @@ export default function App() {
     try {
       const result = await checkTarget(item.id);
       setError("");
+      const pinning =
+        result.supports_ignore_eos === undefined
+          ? ""
+          : result.supports_ignore_eos
+            ? " · 출력 길이 고정(ignore_eos) 지원"
+            : " · 출력 길이 고정(ignore_eos) 미지원 — 켜지 마세요";
       setNotice(
-        `${item.name}: HTTP ${result.status_code} · ${result.latency_millis} ms`,
+        `${item.name}: HTTP ${result.status_code} · ${result.latency_millis} ms${pinning}`,
       );
     } catch (err) {
       setNotice("");
