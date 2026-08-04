@@ -19,12 +19,30 @@ func ValidateAutoSearchConfig(config AutoSearchConfig) error {
 	return nil
 }
 
+// CompletionShortfall reports the completion-rate gate when a run finished too
+// few of the requests it started. A run where most requests were still in flight
+// at the deadline measured nothing about capacity, so it is never "stable".
+func CompletionShortfall(run Run) (float64, float64, bool) {
+	limit := run.Config.MinCompletionPercent
+	if limit == 0 {
+		limit = 95
+	}
+	// Results from an Agent that does not report the lifecycle cannot be gated.
+	if run.Result.Issued == 0 {
+		return 0, limit, false
+	}
+	return run.Result.CompletionPercent, limit, run.Result.CompletionPercent < limit
+}
+
 func IsRunStable(run Run) bool {
 	total := run.Result.Total
 	if total == 0 {
 		total = run.Result.Successes + run.Result.Failures
 	}
 	if total == 0 {
+		return false
+	}
+	if _, _, short := CompletionShortfall(run); short {
 		return false
 	}
 	errorRate := float64(run.Result.Failures) * 100 / float64(total)
@@ -48,6 +66,9 @@ func InstabilityMessage(run Run) string {
 	}
 	if total == 0 {
 		return "no completed requests"
+	}
+	if actual, limit, short := CompletionShortfall(run); short {
+		return fmt.Sprintf("only %.1f%% of %d started requests finished, below the required %.1f%%", actual, run.Result.Issued, limit)
 	}
 	errorRate := float64(run.Result.Failures) * 100 / float64(total)
 	if errorRate > run.Config.MaxErrorPercent {

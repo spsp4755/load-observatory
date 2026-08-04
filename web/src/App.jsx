@@ -17,6 +17,7 @@ import { compareRuns, policyText, presets } from "./record-utils.js";
 import { loadSavedValue, saveValue } from "./form-storage.js";
 import { toRunConfig, toSearchConfig } from "./run-form.js";
 import {
+  completionShortfall,
   getVerdict,
   milliseconds,
   rate,
@@ -24,6 +25,12 @@ import {
 } from "./results.js";
 import { recommendWorkload } from "./workload-profiles.js";
 import { operationalSummary } from "./operational-summary.js";
+import {
+  defaultTokensPerSecond,
+  estimateWorkload,
+  formatSeconds,
+  workloadShape,
+} from "./duration-advice.js";
 
 const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   type: "model",
@@ -36,7 +43,11 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   mode: "vu",
   vus: "10",
   rps: "100",
-  duration: "60",
+  duration: "600",
+  drainSeconds: "120",
+  steadyStateSeconds: "60",
+  minCompletionPercent: "95",
+  tokensPerSecond: String(defaultTokensPerSecond),
   maxErrorPercent: "2",
   maxP95Millis: "2000",
   maxTTFTP95Millis: "0",
@@ -73,6 +84,97 @@ const agentWorkflowTemplate = [
   { name: "검토", weight: 1, max_tokens: 4096, think_time_millis: 2500, prompt: "도구 결과 — 수정 diff와 재실행 테스트가 제공되었습니다.\n\n변경 사항을 검토하고 배포 전 위험 요소와 최종 요약을 작성하세요." },
 ];
 
+const phaseLabels = {
+  warmup: "워밍업",
+  load: "부하 측정",
+  drain: "종료 유예 (진행 중 요청 대기)",
+  cooldown: "쿨다운",
+  done: "정리",
+};
+
+// LiveProgress answers the question a running test must answer every second:
+// is the target load actually being served, or is it queueing up behind a
+// model that cannot keep pace?
+function LiveProgress({ run }) {
+  const shards = run?.progress || [];
+  if (!["queued", "running"].includes(run?.status)) return null;
+  if (!shards.length)
+    return (
+      <section className="panel">
+        <h3>실시간 진행</h3>
+        <p className="muted">Agent가 첫 측정치를 보고하면 매 초 상태가 표시됩니다.</p>
+      </section>
+    );
+  const sum = (key) => shards.reduce((total, shard) => total + (shard[key] || 0), 0);
+  const target = sum("target_load");
+  const active = sum("active");
+  const waiting = sum("waiting");
+  const completed = sum("completed");
+  const issued = sum("issued");
+  const cancelled = sum("cancelled");
+  const completedRPS = shards.reduce((total, shard) => total + (shard.completed_rps || 0), 0);
+  const second = Math.max(...shards.map((shard) => shard.second || 0));
+  const phase = shards.find((shard) => shard.phase === "drain")?.phase || shards[0].phase;
+  const served = target ? (active / target) * 100 : 0;
+  return (
+    <section className="panel live-progress">
+      <h3>
+        실시간 진행 · {formatSeconds(second)} 경과
+        <span className={`phase-tag ${phase}`}>{phaseLabels[phase] || phase}</span>
+      </h3>
+      <div className="metrics">
+        <Metric label="목표 부하" value={target || "—"} />
+        <Metric label="실제 활성 요청" value={active} />
+        <Metric label="대기 (생각 시간·슬롯)" value={waiting} />
+        <Metric label="완료 RPS" value={completedRPS.toFixed(2)} />
+        <Metric label="발행" value={issued} />
+        <Metric label="완료" value={completed} />
+      </div>
+      {target > 0 && active < target && (
+        <p className="warn-line">
+          목표 {target} 중 {active}건만 실제로 처리 중입니다({served.toFixed(0)}%). 나머지는 생각 시간 대기이거나 아직 발행되지
+          않았습니다. 이 격차가 계속되면 목표 부하가 실제로 가해지지 않고 있다는 뜻입니다.
+        </p>
+      )}
+      {cancelled > 0 && (
+        <p className="warn-line">진행 중 취소 {cancelled}건. 종료 유예 시간을 늘리면 완료로 집계됩니다.</p>
+      )}
+      <table>
+        <thead>
+          <tr>
+            <th>샤드</th>
+            <th>단계</th>
+            <th>목표</th>
+            <th>활성</th>
+            <th>대기</th>
+            <th>발행</th>
+            <th>완료</th>
+            <th>실패</th>
+            <th>취소</th>
+            <th>완료 RPS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shards.map((shard) => (
+            <tr key={shard.shard_id}>
+              <td>{shard.shard_id}</td>
+              <td>{phaseLabels[shard.phase] || shard.phase}</td>
+              <td>{shard.target_load}</td>
+              <td>{shard.active}</td>
+              <td>{shard.waiting}</td>
+              <td>{shard.issued}</td>
+              <td>{shard.completed}</td>
+              <td>{shard.failures}</td>
+              <td>{shard.cancelled}</td>
+              <td>{(shard.completed_rps || 0).toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 function Details({ run, onCancel }) {
   if (!run)
     return (
@@ -92,6 +194,8 @@ function Details({ run, onCancel }) {
   const verdict = getVerdict(run);
   const operational = operationalSummary(run);
   const monitoring = summarizeMonitoring(run.monitoring);
+  const shortfall = completionShortfall(run);
+  const scenarios = result.scenarios || [];
   const distribution = (values) => (
     <div className="distribution-values">
       {[
@@ -150,6 +254,18 @@ function Details({ run, onCancel }) {
             시간 <b>{run.config.duration_seconds}초</b>
           </span>
           <span>
+            종료 유예{" "}
+            <b>{run.config.drain_seconds ? formatSeconds(run.config.drain_seconds) : "없음"}</b>
+          </span>
+          <span>
+            측정 시작{" "}
+            <b>
+              {run.config.steady_state_seconds
+                ? `${formatSeconds(run.config.steady_state_seconds)} 이후`
+                : "즉시"}
+            </b>
+          </span>
+          <span>
             최대 출력 <b>{run.config.max_tokens} 토큰</b>
           </span>
           <span>
@@ -158,6 +274,40 @@ function Details({ run, onCancel }) {
         </div>
         <p className="prompt-preview">{run.config.prompt}</p>
       </section>
+      {result.issued > 0 && (
+        <section className={`panel lifecycle ${shortfall ? "at-risk" : ""}`}>
+          <h3>요청 처리 결과</h3>
+          <p className="muted">
+            시작된 요청과 끝난 요청을 분리해 집계합니다. 시간 종료로 취소된 요청은 실패가 아니지만, 완료로도 세지 않습니다.
+          </p>
+          <div className="metrics">
+            <Metric label="발행 (시작)" value={result.issued} />
+            <Metric label="완료 (응답 수신)" value={result.completed ?? 0} />
+            <Metric
+              label="완료율"
+              value={`${(result.completion_percent ?? 0).toFixed(1)}%`}
+            />
+            <Metric label="시간 종료 취소" value={result.cancelled ?? 0} />
+            <Metric label="HTTP 실패" value={result.http_failures ?? 0} />
+            <Metric label="연결·전송 오류" value={result.transport_errors ?? 0} />
+          </div>
+          {shortfall ? (
+            <p className="warn-line">
+              {shortfall.message} 이 실행은 {loadText(run)} 수용 가능을 증명하지 못하므로 안정 용량으로 판정하지 않습니다.
+            </p>
+          ) : (
+            <p className="muted">
+              시작한 요청의 {(result.completion_percent ?? 0).toFixed(1)}%가 끝났습니다. 완료율이 기준
+              {" "}{run.config.min_completion_percent || 95}% 이상이므로 이 부하 구간의 결과를 판정에 사용합니다.
+            </p>
+          )}
+          {result.drained_seconds > 0 && (
+            <p className="muted">
+              종료 유예 {formatSeconds(result.drained_seconds)} 동안 진행 중이던 요청이 끝날 때까지 기다렸습니다.
+            </p>
+          )}
+        </section>
+      )}
       <section className="panel">
         <h3>운영 요약</h3>
         <div className="metrics">
@@ -179,6 +329,22 @@ function Details({ run, onCancel }) {
       </section>
       <section className="panel">
         <h3>지연 분석</h3>
+        {result.steady_state_samples > 0 ? (
+          <p className="muted">
+            아래 P50·P95·TTFT·TPOT는 워밍업과 램프업을 제외한 안정 구간
+            {result.steady_state_seconds > 0
+              ? ` (${formatSeconds(result.steady_state_seconds)} 이후)`
+              : ""}
+            의 성공 요청 {result.steady_state_samples}건만으로 계산했습니다.
+          </p>
+        ) : (
+          result.issued > 0 && (
+            <p className="warn-line">
+              안정 구간에 완료된 요청이 없어 지연 분포를 신뢰할 수 없습니다. 실행 시간을 늘리거나 측정 시작 지점을 앞으로
+              당기세요.
+            </p>
+          )
+        )}
         {result.latency_scope === "worst_shard_p95" && (
           <p className="muted">
             분산 실행의 P95는 각 샤드 P95 중 가장 높은 값입니다. 안정성 판정을
@@ -222,6 +388,51 @@ function Details({ run, onCancel }) {
           </div>
         </section>
       )}
+      {scenarios.length > 0 && (
+        <section className="panel">
+          <h3>시나리오별 결과</h3>
+          <p className="muted">
+            단계마다 완료율·지연·토큰 처리량을 따로 집계합니다. 느린 단계가 전체 평균에 묻히지 않도록 분리했습니다.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>단계</th>
+                <th>발행</th>
+                <th>완료</th>
+                <th>완료율</th>
+                <th>취소</th>
+                <th>실패</th>
+                <th>P50</th>
+                <th>P95</th>
+                <th>TTFT P95</th>
+                <th>출력 토큰</th>
+                <th>출력 속도</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scenarios.map((scenario) => (
+                <tr
+                  key={scenario.name}
+                  className={scenario.completion_percent < (run.config.min_completion_percent || 95) ? "row-at-risk" : ""}
+                >
+                  <td>{scenario.name}</td>
+                  <td>{scenario.issued}</td>
+                  <td>{scenario.completed}</td>
+                  <td>{(scenario.completion_percent || 0).toFixed(1)}%</td>
+                  <td>{scenario.cancelled}</td>
+                  <td>{scenario.failures}</td>
+                  <td>{milliseconds(scenario.latency?.p50_millis)}</td>
+                  <td>{milliseconds(scenario.latency?.p95_millis)}</td>
+                  <td>{milliseconds(scenario.ttft?.p95_millis)}</td>
+                  <td>{(scenario.output_tokens || 0).toLocaleString()}</td>
+                  <td>{(scenario.output_per_second || 0).toFixed(1)} tok/s</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
       <section className="panel">
         <h3>인프라 모니터링</h3>
         {monitoring.available ? (
@@ -248,35 +459,53 @@ function Details({ run, onCancel }) {
         )}
       </section>
       <section className="panel">
-        <h3>시간별 추세</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>경과</th>
-              <th>요청</th>
-              <th>성공</th>
-              <th>실패</th>
-              <th>P95</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(result.timeline || []).length ? (
-              result.timeline.map((point) => (
-                <tr key={point.second}>
-                  <td>{point.second + 1}초</td>
-                  <td>{point.requests}</td>
-                  <td>{point.successes}</td>
-                  <td>{point.failures}</td>
-                  <td>{milliseconds(point.p95_millis)}</td>
-                </tr>
-              ))
-            ) : (
+        <h3>초당 추세</h3>
+        <p className="muted">
+          목표 부하와 실제 활성 요청의 격차가 곧 대상이 부하를 받아내지 못한 정도입니다. 완료는 그 초에 응답이 끝난 건수입니다.
+        </p>
+        <div className="scroll-x">
+          <table>
+            <thead>
               <tr>
-                <td colSpan="5">추세 데이터가 없습니다.</td>
+                <th>경과</th>
+                <th>목표</th>
+                <th>활성</th>
+                <th>대기</th>
+                <th>발행</th>
+                <th>완료</th>
+                <th>성공</th>
+                <th>실패</th>
+                <th>취소</th>
+                <th>P95</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(result.timeline || []).length ? (
+                result.timeline.map((point) => (
+                  <tr
+                    key={point.second}
+                    className={point.target_load > 0 && point.active < point.target_load ? "row-at-risk" : ""}
+                  >
+                    <td>{point.second + 1}초</td>
+                    <td>{point.target_load || "—"}</td>
+                    <td>{point.active || 0}</td>
+                    <td>{point.waiting || 0}</td>
+                    <td>{point.issued || 0}</td>
+                    <td>{point.completed || 0}</td>
+                    <td>{point.successes}</td>
+                    <td>{point.failures}</td>
+                    <td>{point.cancelled || 0}</td>
+                    <td>{milliseconds(point.p95_millis)}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="10">추세 데이터가 없습니다.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
       <section className="split">
         <section className="panel">
@@ -315,7 +544,7 @@ function Details({ run, onCancel }) {
   );
 }
 
-function ScenarioControls({ form, setForm }) {
+function ScenarioControls({ form, setForm, advice, applyAdvice }) {
   const applyAgentWorkflow = () => setForm((current) => recommendWorkload("agent", current));
   const applySimpleProfile = () => setForm((current) => recommendWorkload("simple", current));
   const applyRAGProfile = () => setForm((current) => recommendWorkload("rag", current));
@@ -368,13 +597,7 @@ function ScenarioControls({ form, setForm }) {
     }));
   const scenario = form.scenario || [];
   const journeys = form.journeys || [];
-  const configuredTokenLimits = [...scenario, ...journeys.flatMap((journey) => journey.scenario || [])]
-    .map((task) => Number(task.max_tokens || 0))
-    .filter((value) => value > 0);
-  const callsPerUser = form.agentWorkflow ? scenario.length : 1;
-  const outputBudget = form.agentWorkflow
-    ? scenario.reduce((total, task) => total + Number(task.max_tokens || form.maxTokens || 0), 0)
-    : configuredTokenLimits.length ? Math.max(...configuredTokenLimits) : Number(form.maxTokens || 0);
+  const { callsPerUser, outputBudget } = workloadShape(form);
   const workloadName = form.agentWorkflow ? "순차 에이전트 세션" : scenario.length > 1 ? "혼합 요청 사용자군" : "단일 질의 요청";
   const callsLabel = journeys.length ? "사용자군별 호출" : "사용자당 호출";
   const callsValue = journeys.length ? "단일 1회 / 에이전트 3회" : `${callsPerUser}회`;
@@ -384,8 +607,30 @@ function ScenarioControls({ form, setForm }) {
         <div><span>현재 테스트 계획</span><strong>{workloadName}</strong></div>
         <div><span>{callsLabel}</span><strong>{callsValue}</strong></div>
         <div><span>{form.agentWorkflow ? "사용자당 최대 출력 예산" : "요청당 최대 출력 예산"}</span><strong>{outputBudget.toLocaleString()} 토큰</strong></div>
+        <div><span>예상 소요 시간 (1{form.agentWorkflow ? "세션" : "요청"})</span><strong>{formatSeconds(advice.secondsPerUserCycle)}</strong></div>
         <p>VU는 동시 사용자 수입니다. 혼합 사용자군은 가중치 비율로 요청을 섞고, 에이전트 워크로드는 각 단계를 순서대로 실행합니다.</p>
       </section>
+      {advice.message && (
+        <section className={`duration-advice ${advice.level}`} aria-live="polite">
+          <div>
+            <strong>
+              {advice.level === "error"
+                ? "측정 시간이 부족합니다"
+                : advice.level === "warn"
+                  ? "측정 시간을 확인하세요"
+                  : "측정 시간 적정"}
+            </strong>
+            <p>{advice.message}</p>
+          </div>
+          {advice.level !== "ok" && (
+            <button type="button" className="small" onClick={applyAdvice}>
+              권장값 적용 (실행 {formatSeconds(advice.recommendedDurationSeconds)} · 측정 시작{" "}
+              {formatSeconds(advice.recommendedSteadyStateSeconds)} · 유예{" "}
+              {formatSeconds(advice.recommendedDrainSeconds)})
+            </button>
+          )}
+        </section>
+      )}
       <h3>추천 워크로드</h3>
       <div className="workflow-grid">
       <div className="workflow-choice"><div><strong>간단 질의 사용자</strong><p>짧은 질문과 응답을 반복하는 일반 채팅 사용자 프로필입니다.</p></div><button type="button" className={!form.agentWorkflow ? "active" : "small"} onClick={applySimpleProfile}>간단 질의로 구성</button></div>
@@ -727,11 +972,58 @@ function TestSettings({
       </label>
       <label>
         실행 시간 (초)
+        <small>부하를 발행하는 시간입니다. 종료 유예는 여기에 포함되지 않습니다.</small>
         <input
           name="duration"
           type="number"
           min="1"
           value={form.duration}
+          onChange={update}
+        />
+      </label>
+      <label>
+        종료 유예 (초)
+        <small>실행 시간이 끝나면 새 요청을 멈추고, 진행 중인 요청이 끝날 때까지 이만큼 기다립니다.</small>
+        <input
+          name="drainSeconds"
+          type="number"
+          min="0"
+          max="600"
+          value={form.drainSeconds ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
+        측정 시작 지점 (초)
+        <small>이 시간 이전에 시작된 요청은 P50·P95·TTFT·TPOT 계산에서 제외합니다.</small>
+        <input
+          name="steadyStateSeconds"
+          type="number"
+          min="0"
+          value={form.steadyStateSeconds ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
+        최소 완료율 (%)
+        <small>시작한 요청 중 끝난 비율의 하한입니다. 이 값 미만이면 안정 용량으로 판정하지 않습니다.</small>
+        <input
+          name="minCompletionPercent"
+          type="number"
+          min="0"
+          max="100"
+          value={form.minCompletionPercent ?? "95"}
+          onChange={update}
+        />
+      </label>
+      <label>
+        예상 생성 속도 (tok/s)
+        <small>실행 시간이 충분한지 계산하는 데만 씁니다. 실제 측정값으로 보정하세요.</small>
+        <input
+          name="tokensPerSecond"
+          type="number"
+          min="1"
+          value={form.tokensPerSecond ?? String(defaultTokensPerSecond)}
           onChange={update}
         />
       </label>
@@ -868,6 +1160,7 @@ function Records({ runs, choose }) {
             <th>부하</th>
             <th>캐시</th>
             <th>성공률</th>
+            <th>완료율</th>
             <th>P95</th>
             <th>판정</th>
           </tr>
@@ -888,6 +1181,11 @@ function Records({ runs, choose }) {
                 <td>{loadText(item)}</td>
                 <td>{policyText(item)}</td>
                 <td>{rate(result.successes || 0, total)}</td>
+                <td className={completionShortfall(item) ? "cell-at-risk" : ""}>
+                  {result.issued
+                    ? `${(result.completion_percent ?? 0).toFixed(1)}%`
+                    : "—"}
+                </td>
                 <td>
                   {milliseconds(
                     result.latency?.p95_millis ?? result.p95_millis,
@@ -989,6 +1287,22 @@ export default function App() {
   const [page, setPage] = useState("test");
   const [mode, setMode] = useState("manual");
   const [form, setForm] = useState(initial);
+  const { callsPerUser, outputBudget } = workloadShape(form);
+  const advice = estimateWorkload({
+    outputBudget,
+    callsPerUser,
+    tokensPerSecond: form.tokensPerSecond,
+    durationSeconds: form.duration,
+    steadyStateSeconds: form.steadyStateSeconds,
+    drainSeconds: form.drainSeconds,
+  });
+  const applyAdvice = () =>
+    setForm((current) => ({
+      ...current,
+      duration: String(advice.recommendedDurationSeconds),
+      steadyStateSeconds: String(advice.recommendedSteadyStateSeconds),
+      drainSeconds: String(advice.recommendedDrainSeconds),
+    }));
   const [run, setRun] = useState(null);
   const [runs, setRuns] = useState([]);
   const [search, setSearch] = useState(null);
@@ -1127,6 +1441,7 @@ export default function App() {
   };
   const start = async () => {
     try {
+      if (advice.invalid) throw new Error(advice.message);
       const targetId =
         selectedProfileId ||
         (
@@ -1217,7 +1532,12 @@ export default function App() {
                 selectedProfileId={selectedProfileId}
                 selectProfile={selectProfile}
               />
-              <ScenarioControls form={form} setForm={setForm} />
+              <ScenarioControls
+                form={form}
+                setForm={setForm}
+                advice={advice}
+                applyAdvice={applyAdvice}
+              />
               {mode === "automatic" && (
                 <div className="grid auto-fields">
                   <label>
@@ -1260,6 +1580,7 @@ export default function App() {
                 </button>
               )}
             </section>
+            <LiveProgress run={run} />
             <Details run={run} onCancel={stopRun} />
           </>
         )}
@@ -1267,6 +1588,7 @@ export default function App() {
           <>
             <Records runs={runs} choose={setRun} />
             <Comparison runs={runs} />
+            <LiveProgress run={run} />
             <Details run={run} onCancel={stopRun} />
           </>
         )}

@@ -69,6 +69,15 @@ func ValidateRunConfig(config RunConfig) error {
 	if config.MinGoodputPercent < 0 || config.MinGoodputPercent > 100 || config.MaxTTPOTP95Millis < 0 {
 		return errors.New("invalid LLM guardrail")
 	}
+	if config.DrainSeconds < 0 || config.DrainSeconds > 600 {
+		return errors.New("drain_seconds must be between 0 and 600")
+	}
+	if config.MinCompletionPercent < 0 || config.MinCompletionPercent > 100 {
+		return errors.New("min_completion_percent must be between 0 and 100")
+	}
+	if config.SteadyStateSeconds < 0 || config.SteadyStateSeconds >= config.DurationSeconds {
+		return errors.New("steady_state_seconds must be shorter than the run duration")
+	}
 	if len(config.Stages) > 12 || len(config.Scenario) > 8 || len(config.Journeys) > 5 {
 		return errors.New("too many stages or scenario tasks")
 	}

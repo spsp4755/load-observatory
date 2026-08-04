@@ -46,7 +46,10 @@ func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 	heartbeatDone := make(chan struct{})
 	go watchCancellation(runCtx, baseURL, assignment.Run.ID, cancel, done)
 	go keepHeartbeat(runCtx, baseURL, heartbeatDone)
-	resultBody, err := json.Marshal(RunTarget(runCtx, assignment.Target, assignment.Run.Config))
+	publish := func(progress core.RunProgress) {
+		sendProgress(ctx, baseURL, assignment.Run.ID, assignment.Shard.ID, progress)
+	}
+	resultBody, err := json.Marshal(RunTargetWithProgress(runCtx, assignment.Target, assignment.Run.Config, publish))
 	close(done)
 	close(heartbeatDone)
 	if err != nil {
@@ -66,6 +69,25 @@ func RunOnce(ctx context.Context, controllerURL string) (bool, error) {
 		return false, fmt.Errorf("report result: HTTP %d", response.StatusCode)
 	}
 	return true, nil
+}
+
+// sendProgress publishes the live once-a-second snapshot. Losing one is
+// harmless, so failures are ignored rather than interrupting the run.
+func sendProgress(ctx context.Context, baseURL, runID, shardID string, progress core.RunProgress) {
+	body, err := json.Marshal(progress)
+	if err != nil {
+		return
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/agent/runs/"+runID+"/shards/"+shardID+"/progress", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return
+	}
+	_ = response.Body.Close()
 }
 
 func sendHeartbeat(ctx context.Context, baseURL string) error {

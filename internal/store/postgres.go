@@ -103,6 +103,11 @@ func (s *PostgresStore) CompleteShard(id string, r core.RunResult) (core.Run, bo
 	}
 	return v, ok
 }
+
+// SetShardProgress is live in-run telemetry, so it stays in memory only.
+func (s *PostgresStore) SetShardProgress(shardID string, progress core.RunProgress) bool {
+	return s.memory.SetShardProgress(shardID, progress)
+}
 func (s *PostgresStore) AddMonitoring(id string, sample core.MonitoringSample) {
 	s.memory.AddMonitoring(id, sample)
 	s.persist()

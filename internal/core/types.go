@@ -64,6 +64,9 @@ type RunConfig struct {
 	Scenario                 []ScenarioTask `json:"scenario,omitempty"`
 	AgentWorkflow            bool           `json:"agent_workflow,omitempty"`
 	Journeys                 []UserJourney  `json:"journeys,omitempty"`
+	DrainSeconds             int            `json:"drain_seconds,omitempty"`
+	SteadyStateSeconds       int            `json:"steady_state_seconds,omitempty"`
+	MinCompletionPercent     float64        `json:"min_completion_percent,omitempty"`
 }
 
 type LoadStage struct {
@@ -108,6 +111,47 @@ type TimelinePoint struct {
 	Successes int64 `json:"successes"`
 	Failures  int64 `json:"failures"`
 	P95Millis int64 `json:"p95_millis"`
+	// Issued counts requests started in this second; Completed counts those that
+	// received a full HTTP response. Cancelled counts in-flight requests killed by
+	// the run deadline. Active/Waiting/TargetLoad are gauges sampled once a second.
+	Issued     int64 `json:"issued"`
+	Completed  int64 `json:"completed"`
+	Cancelled  int64 `json:"cancelled"`
+	Active     int64 `json:"active"`
+	Waiting    int64 `json:"waiting"`
+	TargetLoad int64 `json:"target_load"`
+}
+
+// ScenarioResult separates completion rate, latency and token throughput per
+// scenario step so a slow step cannot hide behind a fast one's averages.
+type ScenarioResult struct {
+	Name              string       `json:"name"`
+	Issued            int64        `json:"issued"`
+	Completed         int64        `json:"completed"`
+	Failures          int64        `json:"failures"`
+	Cancelled         int64        `json:"cancelled"`
+	CompletionPercent float64      `json:"completion_percent"`
+	Latency           Distribution `json:"latency"`
+	TTFT              Distribution `json:"ttft"`
+	OutputTokens      int64        `json:"output_tokens"`
+	OutputPerSecond   float64      `json:"output_per_second"`
+}
+
+// RunProgress is the live once-a-second snapshot an Agent reports while a shard
+// is still running, so the UI can show target load against real activity.
+type RunProgress struct {
+	ShardID      string  `json:"shard_id"`
+	Phase        string  `json:"phase"`
+	Second       int64   `json:"second"`
+	TargetLoad   int64   `json:"target_load"`
+	Active       int64   `json:"active"`
+	Waiting      int64   `json:"waiting"`
+	Issued       int64   `json:"issued"`
+	Completed    int64   `json:"completed"`
+	Failures     int64   `json:"failures"`
+	Cancelled    int64   `json:"cancelled"`
+	Dropped      int64   `json:"dropped"`
+	CompletedRPS float64 `json:"completed_rps"`
 }
 
 type RunResult struct {
@@ -133,6 +177,21 @@ type RunResult struct {
 	Errors             []string         `json:"errors"`
 	Timeline           []TimelinePoint  `json:"timeline"`
 	LatencyScope       string           `json:"latency_scope,omitempty"`
+	// Request lifecycle, kept separate so an unfinished request is never silently
+	// dropped: Issued = Successes + HTTPFailures + TransportErrors + Cancelled.
+	Issued            int64   `json:"issued"`
+	Completed         int64   `json:"completed"`
+	Cancelled         int64   `json:"cancelled"`
+	HTTPFailures      int64   `json:"http_failures"`
+	TransportErrors   int64   `json:"transport_errors"`
+	CompletionPercent float64 `json:"completion_percent"`
+	// Latency, TTFT, TTFO, ITL and TPOT above are measured over the steady-state
+	// window only; SteadySeconds is where it starts and SteadySamples how many
+	// successful requests it covers.
+	SteadySeconds  int64            `json:"steady_state_seconds"`
+	SteadySamples  int64            `json:"steady_state_samples"`
+	Scenarios      []ScenarioResult `json:"scenarios,omitempty"`
+	DrainedSeconds int64            `json:"drained_seconds,omitempty"`
 }
 
 type MonitoringSample struct {
@@ -151,6 +210,7 @@ type Run struct {
 	Config     RunConfig          `json:"config"`
 	Result     RunResult          `json:"result"`
 	Monitoring []MonitoringSample `json:"monitoring,omitempty"`
+	Progress   []RunProgress      `json:"progress,omitempty"`
 }
 
 type AutoSearchStatus string

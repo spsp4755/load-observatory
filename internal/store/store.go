@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ type Store interface {
 	ClaimRun() (core.Assignment, bool)
 	CompleteRun(string, core.RunResult) (core.Run, bool)
 	CompleteShard(string, core.RunResult) (core.Run, bool)
+	SetShardProgress(string, core.RunProgress) bool
 	AddMonitoring(string, core.MonitoringSample)
 	TouchAgent()
 	Health() (int, int, bool)
@@ -48,7 +50,10 @@ type MemoryStore struct {
 	searchRun    map[string]string
 	shards       map[string]core.Shard
 	shardResults map[string]core.RunResult
-	agentSeen    time.Time
+	// progress is live in-run telemetry keyed by shard ID. It is deliberately not
+	// part of the snapshot: it is worthless once the run ends.
+	progress  map[string]core.RunProgress
+	agentSeen time.Time
 }
 
 func (s *MemoryStore) Snapshot() ([]byte, error) {
@@ -105,7 +110,43 @@ func (s *MemoryStore) Restore(data []byte) error {
 	if s.shardResults == nil {
 		s.shardResults = map[string]core.RunResult{}
 	}
+	if s.progress == nil {
+		s.progress = map[string]core.RunProgress{}
+	}
 	return nil
+}
+
+func (s *MemoryStore) SetShardProgress(shardID string, progress core.RunProgress) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.shards[shardID]; !ok {
+		return false
+	}
+	progress.ShardID = shardID
+	s.progress[shardID] = progress
+	return true
+}
+
+func (s *MemoryStore) clearRunProgressLocked(runID string) {
+	for shardID, shard := range s.shards {
+		if shard.RunID == runID {
+			delete(s.progress, shardID)
+		}
+	}
+}
+
+func (s *MemoryStore) runProgressLocked(runID string) []core.RunProgress {
+	var live []core.RunProgress
+	for shardID, shard := range s.shards {
+		if shard.RunID != runID {
+			continue
+		}
+		if progress, ok := s.progress[shardID]; ok {
+			live = append(live, progress)
+		}
+	}
+	sort.Slice(live, func(i, j int) bool { return live[i].ShardID < live[j].ShardID })
+	return live
 }
 
 func (s *MemoryStore) ListRuns() []core.Run {
@@ -113,6 +154,7 @@ func (s *MemoryStore) ListRuns() []core.Run {
 	defer s.mu.RUnlock()
 	runs := make([]core.Run, 0, len(s.runs))
 	for _, run := range s.runs {
+		run.Progress = s.runProgressLocked(run.ID)
 		runs = append(runs, run)
 	}
 	return runs
@@ -136,7 +178,7 @@ func (s *MemoryStore) Health() (int, int, bool) {
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{targets: map[string]core.Target{}, runs: map[string]core.Run{}, searches: map[string]core.AutoSearch{}, searchRun: map[string]string{}, shards: map[string]core.Shard{}, shardResults: map[string]core.RunResult{}}
+	return &MemoryStore{targets: map[string]core.Target{}, runs: map[string]core.Run{}, searches: map[string]core.AutoSearch{}, searchRun: map[string]string{}, shards: map[string]core.Shard{}, shardResults: map[string]core.RunResult{}, progress: map[string]core.RunProgress{}}
 }
 
 func (s *MemoryStore) CreateSearch(config core.AutoSearchConfig) core.AutoSearch {
@@ -310,6 +352,9 @@ func (s *MemoryStore) GetRun(id string) (core.Run, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	run, ok := s.runs[id]
+	if ok {
+		run.Progress = s.runProgressLocked(id)
+	}
 	return run, ok
 }
 
@@ -396,7 +441,10 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		}
 	}
 	merged := core.RunResult{StatusCounts: map[string]int64{}}
-	var latencyWeight, ttftWeight, ttfoWeight, tpotWeight, itlWeight int64
+	var distributionWeight int64
+	timeline := map[int64]core.TimelinePoint{}
+	scenarios := map[string]*core.ScenarioResult{}
+	var scenarioOrder []string
 	for shardID, item := range s.shards {
 		if item.RunID != run.ID {
 			continue
@@ -408,31 +456,67 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.DroppedArrivals += value.DroppedArrivals
 		merged.AgentSessions += value.AgentSessions
 		merged.CompletedSessions += value.CompletedSessions
+		merged.Issued += value.Issued
+		merged.Completed += value.Completed
+		merged.Cancelled += value.Cancelled
+		merged.HTTPFailures += value.HTTPFailures
+		merged.TransportErrors += value.TransportErrors
+		merged.SteadySamples += value.SteadySamples
+		merged.SteadySeconds = max(merged.SteadySeconds, value.SteadySeconds)
+		merged.DrainedSeconds = max(merged.DrainedSeconds, value.DrainedSeconds)
 		merged.Tokens.Prompt += value.Tokens.Prompt
 		merged.Tokens.Completion += value.Tokens.Completion
 		merged.Tokens.Reasoning += value.Tokens.Reasoning
-		merged.Timeline = append(merged.Timeline, value.Timeline...)
 		merged.Errors = append(merged.Errors, value.Errors...)
+		if value.StoppedByGuardrail {
+			merged.StoppedByGuardrail = true
+			merged.GuardrailMessage = value.GuardrailMessage
+		}
+		for _, point := range value.Timeline {
+			timeline[point.Second] = mergeTimelinePoint(timeline[point.Second], point)
+		}
+		for _, scenario := range value.Scenarios {
+			if scenarios[scenario.Name] == nil {
+				scenarios[scenario.Name] = &core.ScenarioResult{Name: scenario.Name}
+				scenarioOrder = append(scenarioOrder, scenario.Name)
+			}
+			mergeScenario(scenarios[scenario.Name], scenario)
+		}
+		// Weight percentiles by the steady-state samples they were computed from,
+		// falling back to successes for results from an older Agent.
+		weight := value.SteadySamples
+		if weight == 0 {
+			weight = value.Successes
+		}
+		if weight > 0 {
+			merged.Latency = mergeDistribution(merged.Latency, value.Latency, distributionWeight, weight)
+			merged.TTFT = mergeDistribution(merged.TTFT, value.TTFT, distributionWeight, weight)
+			merged.TTFO = mergeDistribution(merged.TTFO, value.TTFO, distributionWeight, weight)
+			merged.TPOT = mergeDistribution(merged.TPOT, value.TPOT, distributionWeight, weight)
+			merged.ITL = mergeDistribution(merged.ITL, value.ITL, distributionWeight, weight)
+			distributionWeight += weight
+		}
 		if value.Successes > 0 {
-			merged.Latency = mergeDistribution(merged.Latency, value.Latency, latencyWeight, value.Successes)
-			merged.TTFT = mergeDistribution(merged.TTFT, value.TTFT, ttftWeight, value.Successes)
-			merged.TTFO = mergeDistribution(merged.TTFO, value.TTFO, ttfoWeight, value.Successes)
-			merged.TPOT = mergeDistribution(merged.TPOT, value.TPOT, tpotWeight, value.Successes)
-			merged.ITL = mergeDistribution(merged.ITL, value.ITL, itlWeight, value.Successes)
-			latencyWeight += value.Successes
-			ttftWeight += value.Successes
-			ttfoWeight += value.Successes
-			tpotWeight += value.Successes
-			itlWeight += value.Successes
 			merged.GoodputPercent += value.GoodputPercent * float64(value.Successes)
 		}
 		for code, count := range value.StatusCounts {
 			merged.StatusCounts[code] += count
 		}
 	}
+	merged.Timeline = sortedTimeline(timeline)
+	for _, name := range scenarioOrder {
+		scenario := *scenarios[name]
+		if scenario.Issued > 0 {
+			scenario.CompletionPercent = float64(scenario.Completed) * 100 / float64(scenario.Issued)
+		}
+		merged.Scenarios = append(merged.Scenarios, scenario)
+	}
 	merged.P95Millis, merged.TTFTP95Millis = merged.Latency.P95Millis, merged.TTFT.P95Millis
 	if merged.Successes > 0 {
 		merged.GoodputPercent /= float64(merged.Successes)
+	}
+	if merged.Issued > 0 {
+		merged.CompletionPercent = float64(merged.Completed) * 100 / float64(merged.Issued)
 	}
 	if run.Config.Shards > 1 {
 		merged.LatencyScope = "worst_shard_p95"
@@ -444,7 +528,49 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 	run.Status = "completed"
 	run.Result = merged
 	s.runs[run.ID] = run
+	s.clearRunProgressLocked(run.ID)
 	return run, true
+}
+
+// mergeTimelinePoint sums the counters of the same elapsed second across shards
+// so a distributed run reports one row per second instead of one row per shard.
+func mergeTimelinePoint(current, next core.TimelinePoint) core.TimelinePoint {
+	return core.TimelinePoint{
+		Second:     next.Second,
+		Requests:   current.Requests + next.Requests,
+		Successes:  current.Successes + next.Successes,
+		Failures:   current.Failures + next.Failures,
+		Issued:     current.Issued + next.Issued,
+		Completed:  current.Completed + next.Completed,
+		Cancelled:  current.Cancelled + next.Cancelled,
+		Active:     current.Active + next.Active,
+		Waiting:    current.Waiting + next.Waiting,
+		TargetLoad: current.TargetLoad + next.TargetLoad,
+		P95Millis:  max(current.P95Millis, next.P95Millis),
+	}
+}
+
+func mergeScenario(current *core.ScenarioResult, next core.ScenarioResult) {
+	previous := current.Completed
+	current.Issued += next.Issued
+	current.Completed += next.Completed
+	current.Failures += next.Failures
+	current.Cancelled += next.Cancelled
+	current.OutputTokens += next.OutputTokens
+	current.OutputPerSecond += next.OutputPerSecond
+	if next.Completed > 0 {
+		current.Latency = mergeDistribution(current.Latency, next.Latency, previous, next.Completed)
+		current.TTFT = mergeDistribution(current.TTFT, next.TTFT, previous, next.Completed)
+	}
+}
+
+func sortedTimeline(points map[int64]core.TimelinePoint) []core.TimelinePoint {
+	timeline := make([]core.TimelinePoint, 0, len(points))
+	for _, point := range points {
+		timeline = append(timeline, point)
+	}
+	sort.Slice(timeline, func(i, j int) bool { return timeline[i].Second < timeline[j].Second })
+	return timeline
 }
 
 func mergeDistribution(current, next core.Distribution, currentWeight, nextWeight int64) core.Distribution {

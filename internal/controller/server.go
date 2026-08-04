@@ -57,6 +57,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.claimRun(w)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/result"):
 		s.completeShard(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/progress"):
+		s.reportProgress(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/runs/"):
 		s.getRun(w, r)
 	default:
@@ -94,6 +96,24 @@ func (s *Server) completeShard(w http.ResponseWriter, r *http.Request) {
 		s.store.AdvanceSearch(run.ID)
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) reportProgress(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/agent/runs/"), "/progress"), "/shards/")
+	if len(parts) != 2 || parts[1] == "" {
+		http.Error(w, "invalid shard progress path", http.StatusBadRequest)
+		return
+	}
+	var progress core.RunProgress
+	if err := json.NewDecoder(r.Body).Decode(&progress); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if !s.store.SetShardProgress(parts[1], progress) {
+		http.NotFound(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +311,18 @@ func applyWorkloadDefaults(config *core.RunConfig) {
 	}
 	if config.CachePolicy == core.CachePolicyMixed && config.VariationPercent == 0 {
 		config.VariationPercent = 30
+	}
+	// A long generation must be allowed to finish rather than be cut at the
+	// deadline, and the ramp-up must not pollute the evaluated percentiles.
+	// Both scale with the run so short smoke tests stay short.
+	if config.DrainSeconds == 0 {
+		config.DrainSeconds = min(120, config.DurationSeconds/5)
+	}
+	if config.SteadyStateSeconds == 0 {
+		config.SteadyStateSeconds = min(60, config.DurationSeconds/5)
+	}
+	if config.MinCompletionPercent == 0 {
+		config.MinCompletionPercent = 95
 	}
 }
 
