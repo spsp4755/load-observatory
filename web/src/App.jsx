@@ -368,10 +368,13 @@ function ScenarioControls({ form, setForm }) {
     }));
   const scenario = form.scenario || [];
   const journeys = form.journeys || [];
+  const configuredTokenLimits = [...scenario, ...journeys.flatMap((journey) => journey.scenario || [])]
+    .map((task) => Number(task.max_tokens || 0))
+    .filter((value) => value > 0);
   const callsPerUser = form.agentWorkflow ? scenario.length : 1;
   const outputBudget = form.agentWorkflow
     ? scenario.reduce((total, task) => total + Number(task.max_tokens || form.maxTokens || 0), 0)
-    : Math.max(Number(form.maxTokens || 0), ...scenario.map((task) => Number(task.max_tokens || 0)), ...journeys.flatMap((journey) => journey.scenario || []).map((task) => Number(task.max_tokens || 0)));
+    : configuredTokenLimits.length ? Math.max(...configuredTokenLimits) : Number(form.maxTokens || 0);
   const workloadName = form.agentWorkflow ? "순차 에이전트 세션" : scenario.length > 1 ? "혼합 요청 사용자군" : "단일 질의 요청";
   const callsLabel = journeys.length ? "사용자군별 호출" : "사용자당 호출";
   const callsValue = journeys.length ? "단일 1회 / 에이전트 3회" : `${callsPerUser}회`;
@@ -399,6 +402,7 @@ function ScenarioControls({ form, setForm }) {
       <div className="grid">
         <label>
           워밍업 요청
+          <small>측정 시작 전 대상 연결과 캐시를 안정화하는 요청 수입니다. 결과에는 포함하지 않습니다.</small>
           <input
             type="number"
             min="0"
@@ -414,6 +418,7 @@ function ScenarioControls({ form, setForm }) {
         </label>
         <label>
           최대 진행 요청
+          <small>RPS 테스트에서 동시에 보낼 수 있는 요청 상한입니다. 0은 기본 상한을 사용합니다.</small>
           <input
             type="number"
             min="0"
@@ -429,6 +434,7 @@ function ScenarioControls({ form, setForm }) {
         </label>
         <label>
           TTFT P95 제한 (ms)
+          <small>첫 토큰이 도착하기까지의 P95 허용 시간입니다. 0은 자동 중단 기준을 사용하지 않습니다.</small>
           <input
             type="number"
             min="0"
@@ -443,6 +449,7 @@ function ScenarioControls({ form, setForm }) {
         </label>
         <label>
           TPOT P95 제한 (ms)
+          <small>출력 토큰 하나당 걸리는 P95 허용 시간입니다. 긴 응답 품질을 판단할 때 사용합니다.</small>
           <input
             type="number"
             min="0"
@@ -457,6 +464,7 @@ function ScenarioControls({ form, setForm }) {
         </label>
         <label>
           최소 Goodput (%)
+          <small>지연과 출력 속도 기준을 모두 통과한 성공 요청의 최소 비율입니다. 0은 기준을 사용하지 않습니다.</small>
           <input
             type="number"
             min="0"
@@ -472,6 +480,7 @@ function ScenarioControls({ form, setForm }) {
         </label>
       </div>
       <h4>단계형 부하</h4>
+      <p className="advanced-help">각 단계는 지정한 시간 동안 목표 VU 또는 RPS로 실행됩니다. 예: 30초 10 VU → 60초 20 VU.</p>
       {(form.stages || []).map((stage, index) => (
         <div className="scenario-row" key={index}>
           <input
@@ -513,9 +522,16 @@ function ScenarioControls({ form, setForm }) {
         단계 추가
       </button>
       <h4>가중 시나리오</h4>
+      <p className="advanced-help">가중치는 전체 요청 중 해당 시나리오의 비율입니다. 최대 토큰은 단계별 상한, 대기는 다음 요청 전 사용자 행동 시간을 뜻합니다.</p>
       <div className="scenario-columns" aria-hidden="true">
-        <span>단계</span><span>프롬프트</span><span>가중치</span><span>최대 토큰</span><span>대기 (ms)</span><span />
+        <span><b>단계명</b><small>결과에 표시할 이름</small></span>
+        <span><b>프롬프트</b><small>실제 사용자 요청 또는 도구 결과</small></span>
+        <span><b>가중치</b><small>전체 요청 중 비율</small></span>
+        <span><b>최대 토큰</b><small>이 요청의 출력 상한</small></span>
+        <span><b>대기 (ms)</b><small>다음 요청까지 대기</small></span>
+        <span />
       </div>
+      <p className="scenario-mobile-help">입력 안내: 단계명은 결과 표시용, 프롬프트는 실제 입력, 가중치는 요청 비율, 최대 토큰은 출력 상한, 대기는 다음 요청 전 시간입니다.</p>
       {(form.scenario || []).map((task, index) => (
         <div className="scenario-row scenario-task" key={index}>
           <input
@@ -1161,7 +1177,14 @@ export default function App() {
             <h2>{titles[page]}</h2>
             <p>캐시 상황을 반영한 실제 사용 패턴으로 한계를 측정합니다.</p>
           </div>
-          <span className="online">● Controller online</span>
+          <div className="header-status">
+            {run && ["queued", "running"].includes(run.status) && (
+              <button className="active-run" onClick={() => setPage("test")}>
+                실행 중 · {loadText(run)} · 측정 계속 진행 중
+              </button>
+            )}
+            <span className="online">● Controller online</span>
+          </div>
         </header>
         {error && <p className="error">{error}</p>}
         {notice && <p className="online">{notice}</p>}
