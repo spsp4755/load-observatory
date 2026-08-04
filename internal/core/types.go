@@ -75,6 +75,11 @@ type RunConfig struct {
 	// operator. When execution pins to it while requests queue, the limit is the
 	// configuration rather than the hardware.
 	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
+	// AccumulateContext carries each turn's answer into the next request, the way
+	// a real chat or agent session does. The prompt then grows every turn, which
+	// is the dominant driver of real KV cache pressure and of TTFT growth. Off by
+	// default because turning it on changes what is being measured.
+	AccumulateContext bool `json:"accumulate_context,omitempty"`
 }
 
 type LoadStage struct {
@@ -143,7 +148,11 @@ type ScenarioResult struct {
 	TTFT              Distribution `json:"ttft"`
 	OutputTokens      int64        `json:"output_tokens"`
 	OutputPerSecond   float64      `json:"output_per_second"`
-	Samples           *RunSamples  `json:"samples,omitempty"`
+	// InputTokens shows the context each step actually carried. With
+	// AccumulateContext on this grows turn by turn, which is what makes a later
+	// step slower than an earlier one.
+	InputTokens int64       `json:"input_tokens"`
+	Samples     *RunSamples `json:"samples,omitempty"`
 }
 
 // RunSamples carries the raw measurements a shard collected. A percentile is not
@@ -222,6 +231,7 @@ type RunResult struct {
 	MissingUsageResponses int64 `json:"missing_usage_responses,omitempty"`
 	ContentChunks         int64 `json:"content_chunks,omitempty"`
 	OutputLengthPinned    bool  `json:"output_length_pinned"`
+	ContextAccumulated    bool  `json:"context_accumulated"`
 }
 
 // MonitoringSample is one second of server-side state. Metrics is a map rather
@@ -313,7 +323,36 @@ type AutoSearch struct {
 	FailedLoad      int              `json:"failed_load"`
 	RecommendedLoad int              `json:"recommended_load"`
 	Message         string           `json:"message"`
+	// Ladder is the concurrency sweep planned up front. A single stable/unstable
+	// answer cannot locate the knee of the throughput-latency curve; the curve has
+	// to be measured, which means running every rung.
+	Ladder []int `json:"ladder,omitempty"`
+	// Steps is the measured curve, one entry per completed rung.
+	Steps []AutoSearchStep `json:"steps,omitempty"`
+	// ProvisionLoad is the load to actually run in production: below the knee, so
+	// normal variation does not push operations past it.
+	ProvisionLoad int `json:"provision_load,omitempty"`
 }
+
+// AutoSearchStep is one measured point on the throughput-latency curve.
+type AutoSearchStep struct {
+	Load               int     `json:"load"`
+	RunID              string  `json:"run_id"`
+	Stable             bool    `json:"stable"`
+	Reason             string  `json:"reason,omitempty"`
+	ThroughputRPS      float64 `json:"throughput_rps"`
+	OutputTokensPerSec float64 `json:"output_tokens_per_second"`
+	TTFTP95Millis      int64   `json:"ttft_p95_millis"`
+	TPOTP95Millis      int64   `json:"tpot_p95_millis"`
+	LatencyP95Millis   int64   `json:"latency_p95_millis"`
+	GoodputPercent     float64 `json:"goodput_percent"`
+	CompletionPercent  float64 `json:"completion_percent"`
+}
+
+// provisionHeadroomPercent is how far below the knee to advise running. Operating
+// at the knee leaves nothing for normal variation, and the curve turns vertical
+// just past it.
+const provisionHeadroomPercent = 70
 
 type Assignment struct {
 	Run    Run    `json:"run"`

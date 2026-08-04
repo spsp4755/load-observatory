@@ -54,6 +54,7 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   minCompletionPercent: "95",
   ignoreEOS: false,
   maxNumSeqs: "0",
+  accumulateContext: false,
   tokensPerSecond: String(defaultTokensPerSecond),
   maxErrorPercent: "2",
   maxP95Millis: "2000",
@@ -245,6 +246,76 @@ const mhzOf = (monitoring, key) => {
   return mean == null ? "미수집" : `${mean.toFixed(0)} MHz`;
 };
 
+// SweepCurve shows the measured latency-throughput curve and where the knee is.
+// A single stable/unstable answer cannot locate capacity; the shape has to be
+// visible, because throughput keeps rising while latency barely moves until the
+// knee and then turns almost vertical.
+function SweepCurve({ search, form }) {
+  const steps = search.steps || [];
+  const ladder = search.ladder || [];
+  const unit = form?.mode === "rps" ? "RPS" : "VU";
+  const knee = search.recommended_load || 0;
+  return (
+    <section className="panel sweep">
+      <h3>
+        용량 sweep
+        <span className={`phase-tag ${search.status}`}>{search.status}</span>
+      </h3>
+      <p className="muted">{search.message || `계획된 단계: ${ladder.join(" → ")} ${unit}`}</p>
+      {knee > 0 && (
+        <div className="metrics">
+          <Metric label={`SLO 충족 최대 부하`} value={`${knee} ${unit}`} />
+          <Metric label="운영 권장 (여유 30%)" value={`${search.provision_load || "—"} ${unit}`} />
+          <Metric label="측정된 단계" value={`${steps.length} / ${ladder.length || "—"}`} />
+        </div>
+      )}
+      {steps.length > 0 && (
+        <div className="scroll-x">
+          <table>
+            <thead>
+              <tr>
+                <th>부하</th>
+                <th>완료 RPS</th>
+                <th>출력 tok/s</th>
+                <th>TTFT P95</th>
+                <th>TPOT P95</th>
+                <th>E2E P95</th>
+                <th>Goodput</th>
+                <th>완료율</th>
+                <th>판정</th>
+              </tr>
+            </thead>
+            <tbody>
+              {steps.map((step) => (
+                <tr key={`${step.load}-${step.run_id}`} className={step.stable ? "" : "row-at-risk"}>
+                  <td>
+                    {step.load} {unit}
+                    {step.load === knee && <b className="knee-tag">← 한계</b>}
+                  </td>
+                  <td>{(step.throughput_rps || 0).toFixed(2)}</td>
+                  <td>{(step.output_tokens_per_second || 0).toFixed(1)}</td>
+                  <td>{milliseconds(step.ttft_p95_millis)}</td>
+                  <td>{milliseconds(step.tpot_p95_millis)}</td>
+                  <td>{milliseconds(step.latency_p95_millis)}</td>
+                  <td>{(step.goodput_percent || 0).toFixed(1)}%</td>
+                  <td>{(step.completion_percent || 0).toFixed(1)}%</td>
+                  <td>{step.stable ? "충족" : step.reason || "미충족"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {steps.length > 1 && (
+        <p className="muted">
+          부하를 올려도 처리량은 늘고 지연은 거의 그대로인 구간이 이어지다가, 한계를 지나면 지연이 급격히 꺾입니다. 이는 continuous
+          batching 때문이며 일반 웹 서버와 반대입니다. 그래서 단일 동시성 측정은 수용량을 크게 과소평가합니다.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function Details({ run, onCancel }) {
   if (!run)
     return (
@@ -393,6 +464,12 @@ function Details({ run, onCancel }) {
             출력 길이{" "}
             <b className={result.output_length_pinned ? "" : "unpinned"}>
               {result.output_length_pinned ? "고정 (ignore_eos)" : "미고정"}
+            </b>
+          </span>
+          <span>
+            대화 이력{" "}
+            <b className={result.context_accumulated ? "" : "unpinned"}>
+              {result.context_accumulated ? "누적 (멀티턴)" : "턴별 독립"}
             </b>
           </span>
           <span>
@@ -554,6 +631,7 @@ function Details({ run, onCancel }) {
                 <th>P50</th>
                 <th>P95</th>
                 <th>TTFT P95</th>
+                <th>입력 토큰</th>
                 <th>출력 토큰</th>
                 <th>출력 속도</th>
               </tr>
@@ -573,6 +651,7 @@ function Details({ run, onCancel }) {
                   <td>{milliseconds(scenario.latency?.p50_millis)}</td>
                   <td>{milliseconds(scenario.latency?.p95_millis)}</td>
                   <td>{milliseconds(scenario.ttft?.p95_millis)}</td>
+                  <td>{(scenario.input_tokens || 0).toLocaleString()}</td>
                   <td>{(scenario.output_tokens || 0).toLocaleString()}</td>
                   <td>{(scenario.output_per_second || 0).toFixed(1)} tok/s</td>
                 </tr>
@@ -1185,6 +1264,24 @@ function TestSettings({
       </label>
       <label className="wide checkbox-field">
         <span>
+          대화 이력 누적 (멀티턴)
+          <small>
+            에이전트·멀티턴 시나리오에서 각 턴의 답변을 다음 요청에 함께 보냅니다. 실제 챗·에이전트처럼 프롬프트가 턴마다
+            커지며, 이 증가가 KV 캐시 압력과 TTFT 상승의 주된 원인입니다. 끄면 각 단계를 독립 요청으로 보내 그 부하를
+            측정하지 않습니다.
+          </small>
+        </span>
+        <input
+          name="accumulateContext"
+          type="checkbox"
+          checked={Boolean(form.accumulateContext)}
+          onChange={(event) =>
+            update({ target: { name: "accumulateContext", value: event.target.checked } })
+          }
+        />
+      </label>
+      <label className="wide checkbox-field">
+        <span>
           출력 길이 고정 (<code>ignore_eos</code>)
           <small>
             모든 응답이 정확히 최대 토큰까지 생성되어 TPOT·ITL을 실행 간 비교할 수 있습니다. vLLM·SGLang 확장이므로, 대상이
@@ -1755,12 +1852,7 @@ export default function App() {
               <button onClick={start}>
                 {mode === "manual" ? "테스트 시작" : "자동 탐색 시작"}
               </button>
-              {search && (
-                <p className="search-progress">
-                  {search.status} · {search.message} · 권장 최대{" "}
-                  {search.recommended_load || search.stable_load || "—"}
-                </p>
-              )}
+              {search && <SweepCurve search={search} form={form} />}
               {search?.status === "running" && (
                 <button
                   className="danger"

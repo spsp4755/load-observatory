@@ -12,33 +12,44 @@ func searchRun(load int, stable bool) Run {
 	return Run{Config: RunConfig{Mode: LoadModeVU, VUs: load, MaxErrorPercent: 2, MaxP95Millis: 2000}, Result: RunResult{Total: 100, Failures: failures, Latency: Distribution{P95Millis: p95}}}
 }
 
-func TestAdvanceSearchDoublesAndBisects(t *testing.T) {
-	search := AutoSearch{Status: AutoSearchRunning, Config: AutoSearchConfig{MaxLoad: 40}}
+// The search walks the planned ladder instead of bisecting, because the
+// deliverable is the latency-throughput curve, not just its boundary.
+func TestAdvanceSearchWalksTheLadder(t *testing.T) {
+	search := AutoSearch{Status: AutoSearchRunning, Config: AutoSearchConfig{StartLoad: 5, MaxLoad: 40}}
 	if next, more := AdvanceSearch(&search, searchRun(5, true)); !more || next != 10 {
 		t.Fatalf("got next %d, more %t", next, more)
 	}
-	if next, more := AdvanceSearch(&search, searchRun(10, false)); !more || next != 7 {
+	if next, more := AdvanceSearch(&search, searchRun(10, true)); !more || next != 20 {
 		t.Fatalf("got next %d, more %t", next, more)
 	}
-	if next, more := AdvanceSearch(&search, searchRun(7, true)); !more || next != 8 {
+	// 20 fails, but one rung past the knee is still worth measuring.
+	if next, more := AdvanceSearch(&search, searchRun(20, false)); !more || next != 40 {
 		t.Fatalf("got next %d, more %t", next, more)
 	}
-	if _, more := AdvanceSearch(&search, searchRun(8, false)); more || search.RecommendedLoad != 7 {
-		t.Fatalf("unexpected final search: %+v", search)
+	if _, more := AdvanceSearch(&search, searchRun(40, false)); more || search.RecommendedLoad != 10 {
+		t.Fatalf("unexpected final search: recommended=%d steps=%+v", search.RecommendedLoad, search.Steps)
 	}
 }
 
-func TestAdvanceSearchHandlesFirstFailureAndMaximum(t *testing.T) {
-	first := AutoSearch{Status: AutoSearchRunning, Config: AutoSearchConfig{MaxLoad: 10}}
+// Escalating after the starting load already failed only wastes time on a rung
+// guaranteed to be worse, because no knee has been found to measure past.
+func TestAdvanceSearchStopsImmediatelyWhenTheStartingLoadFails(t *testing.T) {
+	first := AutoSearch{Status: AutoSearchRunning, Config: AutoSearchConfig{StartLoad: 5, MaxLoad: 40}}
 	if _, more := AdvanceSearch(&first, searchRun(5, false)); more || first.RecommendedLoad != 0 {
-		t.Fatalf("unexpected first failure: %+v", first)
+		t.Fatalf("search escalated off a failing starting load: %+v", first)
 	}
-	if first.Message != "starting load was not stable: error rate 3.0% > allowed 2.0%" {
-		t.Fatalf("unexpected message: %s", first.Message)
+	if len(first.Steps) != 1 {
+		t.Fatalf("expected exactly one measured rung, got %d", len(first.Steps))
 	}
-	ceiling := AutoSearch{Status: AutoSearchRunning, Config: AutoSearchConfig{MaxLoad: 10}}
+}
+
+func TestAdvanceSearchReportsWhenTheCeilingHeld(t *testing.T) {
+	ceiling := AutoSearch{Status: AutoSearchRunning, Config: AutoSearchConfig{StartLoad: 10, MaxLoad: 10}}
 	if _, more := AdvanceSearch(&ceiling, searchRun(10, true)); more || ceiling.RecommendedLoad != 10 {
 		t.Fatalf("unexpected ceiling: %+v", ceiling)
+	}
+	if ceiling.ProvisionLoad != 7 {
+		t.Fatalf("provision load %d, want 7", ceiling.ProvisionLoad)
 	}
 }
 

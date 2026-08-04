@@ -1,6 +1,9 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 func ValidateAutoSearchConfig(config AutoSearchConfig) error {
 	if err := ValidateRunConfig(config.Run); err != nil {
@@ -90,51 +93,146 @@ func InstabilityMessage(run Run) string {
 	return "result did not meet stability criteria"
 }
 
+// SweepLadder plans the concurrency rungs to measure, doubling from start up to
+// max and always ending exactly at max. Continuous batching means throughput
+// keeps rising while per-request latency barely moves until the knee, so the
+// curve has to be sampled across a wide range rather than bisected: a binary
+// search finds a boundary but never the shape.
+func SweepLadder(start, max int) []int {
+	if start < 1 {
+		start = 1
+	}
+	if max < start {
+		max = start
+	}
+	var ladder []int
+	for load := start; load < max; load *= 2 {
+		ladder = append(ladder, load)
+		if len(ladder) >= 12 {
+			break
+		}
+	}
+	if len(ladder) == 0 || ladder[len(ladder)-1] != max {
+		ladder = append(ladder, max)
+	}
+	return ladder
+}
+
+// unstableRungsBeforeStopping is how many consecutive failing rungs to measure
+// before abandoning the sweep. One rung past the knee shows how sharply the curve
+// turns; more than that is wasted time on a server already past its limit.
+const unstableRungsBeforeStopping = 2
+
+// AdvanceSearch records the finished rung and returns the next load to run. It
+// walks the whole ladder rather than bisecting, so the result is a curve with a
+// knee rather than a single boundary value.
 func AdvanceSearch(search *AutoSearch, run Run) (int, bool) {
 	load := run.Config.VUs
 	if run.Config.Mode == LoadModeRPS {
 		load = run.Config.RPS
 	}
+	if len(search.Ladder) == 0 {
+		search.Ladder = SweepLadder(search.Config.StartLoad, search.Config.MaxLoad)
+	}
+	search.Steps = append(search.Steps, stepFrom(load, run))
 	if IsRunStable(run) {
-		search.StableLoad = load
-		if search.FailedLoad > load {
-			if search.FailedLoad-load <= 1 {
-				search.Status = AutoSearchCompleted
-				search.RecommendedLoad = load
-				search.Message = "maximum stable load found"
-				return 0, false
-			}
-			next := (load + search.FailedLoad) / 2
-			search.NextLoad = next
-			return next, true
-		}
-		if load >= search.Config.MaxLoad {
-			search.Status = AutoSearchCompleted
-			search.RecommendedLoad = load
-			search.Message = "configured maximum remained stable"
-			return 0, false
-		}
-		next := load * 2
-		if next > search.Config.MaxLoad {
-			next = search.Config.MaxLoad
-		}
-		search.NextLoad = next
-		return next, true
+		search.StableLoad = max(search.StableLoad, load)
+	} else if search.FailedLoad == 0 || load < search.FailedLoad {
+		search.FailedLoad = load
 	}
-	search.FailedLoad = load
-	reason := InstabilityMessage(run)
-	if search.StableLoad == 0 {
-		search.Status = AutoSearchCompleted
-		search.Message = "starting load was not stable: " + reason
+
+	// Measuring one rung past the knee shows how sharply the curve turns, but only
+	// once a knee exists. If nothing has met the SLO yet there is nothing to
+	// measure past, and a higher load is guaranteed to be worse.
+	if search.StableLoad == 0 && !IsRunStable(run) {
+		finishSearch(search)
 		return 0, false
 	}
-	if search.FailedLoad-search.StableLoad <= 1 {
-		search.Status = AutoSearchCompleted
-		search.RecommendedLoad = search.StableLoad
-		search.Message = "maximum stable load found"
+	// Stop once the server has failed consecutively: the curve past that point
+	// says nothing useful about capacity.
+	if consecutiveUnstableTail(search.Steps) >= unstableRungsBeforeStopping {
+		finishSearch(search)
 		return 0, false
 	}
-	next := (search.StableLoad + search.FailedLoad) / 2
-	search.NextLoad = next
-	return next, true
+	for _, rung := range search.Ladder {
+		if rung > load {
+			search.NextLoad = rung
+			return rung, true
+		}
+	}
+	finishSearch(search)
+	return 0, false
+}
+
+func stepFrom(load int, run Run) AutoSearchStep {
+	stable := IsRunStable(run)
+	step := AutoSearchStep{
+		Load: load, RunID: run.ID, Stable: stable,
+		ThroughputRPS:      run.Result.ThroughputRPS,
+		OutputTokensPerSec: run.Result.Tokens.OutputPerSecond,
+		TTFTP95Millis:      run.Result.TTFT.P95Millis,
+		TPOTP95Millis:      run.Result.TPOT.P95Millis,
+		LatencyP95Millis:   run.Result.Latency.P95Millis,
+		GoodputPercent:     run.Result.GoodputPercent,
+		CompletionPercent:  run.Result.CompletionPercent,
+	}
+	if step.LatencyP95Millis == 0 {
+		step.LatencyP95Millis = run.Result.P95Millis
+	}
+	if !stable {
+		step.Reason = InstabilityMessage(run)
+	}
+	return step
+}
+
+func consecutiveUnstableTail(steps []AutoSearchStep) int {
+	count := 0
+	for i := len(steps) - 1; i >= 0; i-- {
+		if steps[i].Stable {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+// finishSearch picks the capacity to report. The knee is the highest load that
+// still met every SLO, defined by the SLOs rather than by eyeballing the curve.
+func finishSearch(search *AutoSearch) {
+	search.Status = AutoSearchCompleted
+	search.NextLoad = 0
+	knee := KneeLoad(search.Steps)
+	search.RecommendedLoad = knee
+	if knee == 0 {
+		search.Message = "시작 부하부터 SLO를 충족하지 못했습니다. 부하를 더 낮추거나 SLO를 재검토하세요."
+		if len(search.Steps) > 0 && search.Steps[0].Reason != "" {
+			search.Message += " (" + search.Steps[0].Reason + ")"
+		}
+		return
+	}
+	search.ProvisionLoad = knee * provisionHeadroomPercent / 100
+	if search.ProvisionLoad < 1 {
+		search.ProvisionLoad = 1
+	}
+	if knee >= search.Config.MaxLoad {
+		search.Message = fmt.Sprintf("설정한 최대 부하 %d까지 SLO를 충족했습니다. 실제 한계는 더 높을 수 있으니 최대 부하를 올려 다시 측정하세요.", knee)
+		return
+	}
+	search.Message = fmt.Sprintf("SLO를 충족하는 최대 부하는 %d입니다. 운영 제공은 여유를 두고 %d 수준을 권장합니다.", knee, search.ProvisionLoad)
+}
+
+// KneeLoad returns the highest load that met every SLO. A higher rung that passes
+// after a lower one failed is not counted: capacity has to hold continuously from
+// the bottom, or the passing rung was luck rather than headroom.
+func KneeLoad(steps []AutoSearchStep) int {
+	ordered := append([]AutoSearchStep(nil), steps...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Load < ordered[j].Load })
+	knee := 0
+	for _, step := range ordered {
+		if !step.Stable {
+			break
+		}
+		knee = step.Load
+	}
+	return knee
 }

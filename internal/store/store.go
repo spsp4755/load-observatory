@@ -186,7 +186,11 @@ func (s *MemoryStore) CreateSearch(config core.AutoSearchConfig) core.AutoSearch
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
-	search := core.AutoSearch{ID: fmt.Sprintf("search-%d", s.nextID), Status: core.AutoSearchRunning, Config: config, NextLoad: config.StartLoad}
+	// Plan the whole sweep up front so the operator can see what will be measured.
+	search := core.AutoSearch{
+		ID: fmt.Sprintf("search-%d", s.nextID), Status: core.AutoSearchRunning, Config: config,
+		NextLoad: config.StartLoad, Ladder: core.SweepLadder(config.StartLoad, config.MaxLoad),
+	}
 	s.queueSearchRunLocked(&search, config.StartLoad)
 	s.searches[search.ID] = search
 	return search
@@ -478,6 +482,7 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.MissingUsageResponses += value.MissingUsageResponses
 		merged.ContentChunks += value.ContentChunks
 		merged.OutputLengthPinned = value.OutputLengthPinned
+		merged.ContextAccumulated = value.ContextAccumulated
 		if value.Samples != nil {
 			pooledAny = true
 			appendSamples(pooled, value.Samples)
@@ -519,7 +524,9 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 			distributionWeight += weight
 		}
 		if value.Successes > 0 {
-			merged.GoodputPercent += value.GoodputPercent * float64(value.Successes)
+			// Weight by everything that finished, matching the shard's own goodput
+			// denominator, so a shard that mostly errored cannot be under-weighted.
+			merged.GoodputPercent += value.GoodputPercent * float64(value.Total)
 		}
 		for code, count := range value.StatusCounts {
 			merged.StatusCounts[code] += count
@@ -550,8 +557,8 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.Scenarios = append(merged.Scenarios, scenario)
 	}
 	merged.P95Millis, merged.TTFTP95Millis = merged.Latency.P95Millis, merged.TTFT.P95Millis
-	if merged.Successes > 0 {
-		merged.GoodputPercent /= float64(merged.Successes)
+	if merged.Total > 0 {
+		merged.GoodputPercent /= float64(merged.Total)
 	}
 	if merged.Issued > 0 {
 		merged.CompletionPercent = float64(merged.Completed) * 100 / float64(merged.Issued)
@@ -650,6 +657,7 @@ func mergeScenario(current *core.ScenarioResult, next core.ScenarioResult) {
 	current.Failures += next.Failures
 	current.Cancelled += next.Cancelled
 	current.OutputTokens += next.OutputTokens
+	current.InputTokens += next.InputTokens
 	current.OutputPerSecond += next.OutputPerSecond
 	if next.Completed > 0 {
 		current.Latency = mergeDistribution(current.Latency, next.Latency, previous, next.Completed)

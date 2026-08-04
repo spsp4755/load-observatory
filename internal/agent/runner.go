@@ -123,14 +123,27 @@ type timelineMeasurement struct {
 type scenarioMeasurement struct {
 	issued, completed, failures, cancelled int64
 	latencies, ttfts                       sampleSet
-	outputTokens                           int64
+	outputTokens, inputTokens              int64
 }
 type modelTiming struct {
 	ttft, ttfo, tpot int64
 	itls             []int64
 	chunks           int64
 	usageReported    bool
+	// answer is the assistant text, kept only so a multi-turn session can carry
+	// it into the next request and grow the context the way a real session does.
+	answer string
 }
+
+// chatMessage is one turn of an OpenAI-compatible conversation.
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// maxAnswerChars bounds what one accumulated conversation can carry, so a long
+// session cannot grow without limit in the Agent's memory.
+const maxAnswerChars = 200000
 
 // attempt carries the per-request bookkeeping from issue time to record time.
 type attempt struct {
@@ -158,7 +171,7 @@ func RunTargetWithProgress(ctx context.Context, target core.Target, config core.
 	m.stop = cancelRun
 	client := &http.Client{}
 	for range config.WarmupRequests {
-		doRequest(runCtx, client, target, config, m)
+		doRequest(runCtx, client, target, config, m, nil)
 	}
 	m.reset()
 
@@ -311,7 +324,7 @@ func runWorker(issueCtx, requestCtx context.Context, client *http.Client, target
 		return
 	}
 	for issueCtx.Err() == nil {
-		wait := doRequest(requestCtx, client, target, config, m)
+		wait, _ := doRequest(requestCtx, client, target, config, m, nil)
 		m.think(issueCtx, wait)
 	}
 }
@@ -321,7 +334,7 @@ func runJourney(issueCtx, requestCtx context.Context, client *http.Client, targe
 		if config.AgentWorkflow {
 			runAgentSession(issueCtx, requestCtx, client, target, config, m)
 		} else {
-			doRequest(requestCtx, client, target, config, m)
+			doRequest(requestCtx, client, target, config, m, nil)
 		}
 		return
 	}
@@ -333,7 +346,7 @@ func runJourney(issueCtx, requestCtx context.Context, client *http.Client, targe
 		runAgentSession(issueCtx, requestCtx, client, target, journeyConfig, m)
 		return
 	}
-	wait := doRequest(requestCtx, client, target, journeyConfig, m)
+	wait, _ := doRequest(requestCtx, client, target, journeyConfig, m, nil)
 	m.think(issueCtx, wait)
 }
 
@@ -343,6 +356,10 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 	}
 	m.startSession()
 	before := m.successCount()
+	// A real chat or agent session carries every prior turn, so the prompt grows
+	// each turn. That growth is the dominant driver of KV cache pressure and of
+	// TTFT growth, so a session that does not accumulate under-states both.
+	var history []chatMessage
 	for _, task := range config.Scenario {
 		if issueCtx.Err() != nil {
 			return
@@ -355,7 +372,13 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 		if task.MaxTokens > 0 {
 			step.MaxTokens = task.MaxTokens
 		}
-		wait := doRequest(requestCtx, client, target, step, m)
+		wait, answer := doRequest(requestCtx, client, target, step, m, history)
+		if config.AccumulateContext {
+			history = append(history,
+				chatMessage{Role: "user", Content: task.Prompt},
+				chatMessage{Role: "assistant", Content: answer})
+			history = trimHistory(history)
+		}
 		if task.ThinkTimeMillis > 0 {
 			wait = time.Duration(task.ThinkTimeMillis) * time.Millisecond
 		}
@@ -366,7 +389,7 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 	m.completeSession(m.successCount()-before == int64(len(config.Scenario)))
 }
 
-func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) time.Duration {
+func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, history []chatMessage) (time.Duration, string) {
 	sequence, varied, name, prompt, think, maxTokens := m.nextWorkload(config)
 	call := m.beginAttempt(name)
 	m.active.Add(1)
@@ -385,7 +408,8 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		if varied {
 			prompt = variationPrefix(config.WorkloadID, sequence) + prompt
 		}
-		request := map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "max_tokens": maxTokens, "stream": target.Type == core.TargetTypeModel, "stream_options": map[string]bool{"include_usage": true}}
+		messages := append(append([]chatMessage(nil), history...), chatMessage{Role: "user", Content: prompt})
+		request := map[string]any{"model": target.Model, "messages": messages, "max_tokens": maxTokens, "stream": target.Type == core.TargetTypeModel, "stream_options": map[string]bool{"include_usage": true}}
 		if config.IgnoreEOS {
 			request["ignore_eos"] = true
 			request["min_tokens"] = maxTokens
@@ -393,14 +417,14 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		payload, err := json.Marshal(request)
 		if err != nil {
 			m.recordTransportError(call, "encode request")
-			return 0
+			return 0, ""
 		}
 		body = bytes.NewReader(payload)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		m.recordTransportError(call, "create request")
-		return 0
+		return 0, ""
 	}
 	if method == http.MethodPost {
 		request.Header.Set("Content-Type", "application/json")
@@ -411,7 +435,7 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	response, err := client.Do(request)
 	if err != nil {
 		m.recordAborted(call, ctx, err)
-		return 0
+		return 0, ""
 	}
 	timing := modelTiming{ttft: time.Since(call.startedAt).Milliseconds()}
 	usage := core.TokenUsage{}
@@ -420,7 +444,7 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		if err != nil {
 			_ = response.Body.Close()
 			m.recordAborted(call, ctx, err)
-			return 0
+			return 0, ""
 		}
 	} else {
 		_, _ = io.Copy(io.Discard, response.Body)
@@ -429,10 +453,10 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	latency := time.Since(call.startedAt).Milliseconds()
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
 		m.recordHTTPFailure(call, latency, response.StatusCode, "HTTP "+response.Status)
-		return 0
+		return 0, ""
 	}
 	m.recordSuccess(call, latency, timing, response.StatusCode, usage, config)
-	return think
+	return think, timing.answer
 }
 
 func readModelResponse(response *http.Response, started time.Time) (modelTiming, core.TokenUsage, error) {
@@ -444,6 +468,7 @@ func readModelResponse(response *http.Response, started time.Time) (modelTiming,
 	var usage core.TokenUsage
 	timing := modelTiming{}
 	var lastChunk time.Time
+	var answer strings.Builder
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for scanner.Scan() {
@@ -468,6 +493,11 @@ func readModelResponse(response *http.Response, started time.Time) (modelTiming,
 			delta := event.Choices[0].Delta
 			if delta.Content != "" || delta.ReasoningContent != "" {
 				timing.chunks++
+				// Only the final answer carries into the next turn; reasoning
+				// content is not part of the conversation a client would resend.
+				if delta.Content != "" && answer.Len() < maxAnswerChars {
+					answer.WriteString(delta.Content)
+				}
 				if timing.ttft == 0 {
 					timing.ttft = now.Sub(started).Milliseconds()
 				}
@@ -500,6 +530,7 @@ func readModelResponse(response *http.Response, started time.Time) (modelTiming,
 	if timing.tpot == 0 && len(timing.itls) > 0 {
 		timing.tpot = average(timing.itls)
 	}
+	timing.answer = answer.String()
 	return timing, usage, nil
 }
 
@@ -527,6 +558,21 @@ func readModelJSON(body io.Reader) (core.TokenUsage, error) {
 		return core.TokenUsage{}, fmt.Errorf("decode model response: %w", err)
 	}
 	return payload.Usage.tokenUsage(), nil
+}
+
+// trimHistory drops the oldest turns once the accumulated conversation exceeds
+// what one session may carry, keeping the most recent context. The cap exists so
+// a long session cannot grow without limit in the Agent's memory.
+func trimHistory(history []chatMessage) []chatMessage {
+	total := 0
+	for _, message := range history {
+		total += len(message.Content)
+	}
+	for total > maxAnswerChars && len(history) > 2 {
+		total -= len(history[0].Content) + len(history[1].Content)
+		history = history[2:]
+	}
+	return history
 }
 
 // variationPrefix builds the cache-bypass nonce that goes in FRONT of the
@@ -752,6 +798,7 @@ func (m *measurements) recordSuccess(call attempt, latency int64, timing modelTi
 		entry := m.scenarioLocked(call.scenario)
 		entry.completed++
 		entry.outputTokens += usage.Completion
+		entry.inputTokens += usage.Prompt
 		if call.steady {
 			entry.latencies.add(latency)
 			entry.ttfts.add(timing.ttft)
@@ -775,7 +822,7 @@ func (m *measurements) maybeStopLocked(config core.RunConfig) {
 	if message == "" && config.MaxTTPOTP95Millis > 0 && p95(m.tpots.values) > config.MaxTTPOTP95Millis {
 		message = "TPOT P95 SLO exceeded"
 	}
-	if message == "" && config.MinGoodputPercent > 0 && float64(m.goodput)*100/float64(m.successes) < config.MinGoodputPercent {
+	if finished := m.successes + m.httpFailures + m.transportErrors; message == "" && config.MinGoodputPercent > 0 && finished > 0 && float64(m.goodput)*100/float64(finished) < config.MinGoodputPercent {
 		message = "goodput SLO not met"
 	}
 	if message != "" {
@@ -924,9 +971,12 @@ func (m *measurements) result(config core.RunConfig) core.RunResult {
 	if elapsed > 0 {
 		tokens.OutputPerSecond = float64(tokens.Completion) / elapsed
 	}
+	// Goodput counts SLO-meeting requests against every request that finished,
+	// errors included. Dividing by successes alone would let a server that sheds
+	// load under pressure score well precisely because it failed the hard ones.
 	goodput := float64(0)
-	if m.successes > 0 {
-		goodput = float64(m.goodput) * 100 / float64(m.successes)
+	if total > 0 {
+		goodput = float64(m.goodput) * 100 / float64(total)
 	}
 	completionPercent := float64(0)
 	if m.issued > 0 {
@@ -935,7 +985,7 @@ func (m *measurements) result(config core.RunConfig) core.RunResult {
 	scenarios := make([]core.ScenarioResult, 0, len(m.scenarioOrder))
 	for _, name := range m.scenarioOrder {
 		entry := m.scenarios[name]
-		item := core.ScenarioResult{Name: name, Issued: entry.issued, Completed: entry.completed, Failures: entry.failures, Cancelled: entry.cancelled, Latency: distribution(entry.latencies.values), TTFT: distribution(entry.ttfts.values), OutputTokens: entry.outputTokens}
+		item := core.ScenarioResult{Name: name, Issued: entry.issued, Completed: entry.completed, Failures: entry.failures, Cancelled: entry.cancelled, Latency: distribution(entry.latencies.values), TTFT: distribution(entry.ttfts.values), OutputTokens: entry.outputTokens, InputTokens: entry.inputTokens}
 		if entry.issued > 0 {
 			item.CompletionPercent = float64(entry.completed) * 100 / float64(entry.issued)
 		}
@@ -965,7 +1015,7 @@ func (m *measurements) result(config core.RunConfig) core.RunResult {
 		TransportErrors: m.transportErrors, CompletionPercent: completionPercent,
 		SteadySeconds: int64(m.steadyAfter.Seconds()), SteadySamples: m.steadySamples, Scenarios: scenarios,
 		DrainedSeconds: m.drainedSeconds.Load(), Samples: samples,
-		MissingUsageResponses: m.missingUsage, ContentChunks: m.contentChunks, OutputLengthPinned: config.IgnoreEOS,
+		MissingUsageResponses: m.missingUsage, ContentChunks: m.contentChunks, OutputLengthPinned: config.IgnoreEOS, ContextAccumulated: config.AccumulateContext,
 	}
 }
 func p95(values []int64) int64 {
