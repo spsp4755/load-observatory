@@ -1,13 +1,14 @@
 param(
   [Parameter(Mandatory)] [string]$ArchiveDirectory,
-  [Parameter(Mandatory)] [string]$Registry
+  [Parameter(Mandatory)] [string]$Registry,
+  [string]$Version = 'latest'
 )
 
 $ErrorActionPreference = 'Stop'
 $images = @(
-  @{ Archive = 'controller.tar'; Source = 'load-observatory/controller:latest'; Destination = 'load-observatory/controller:latest' },
-  @{ Archive = 'agent.tar'; Source = 'load-observatory/agent:latest'; Destination = 'load-observatory/agent:latest' },
-  @{ Archive = 'web.tar'; Source = 'load-observatory/web:latest'; Destination = 'load-observatory/web:latest' },
+  @{ Archive = 'controller.tar'; Source = "load-observatory/controller:$Version"; Destination = "load-observatory/controller:$Version" },
+  @{ Archive = 'agent.tar'; Source = "load-observatory/agent:$Version"; Destination = "load-observatory/agent:$Version" },
+  @{ Archive = 'web.tar'; Source = "load-observatory/web:$Version"; Destination = "load-observatory/web:$Version" },
   @{ Archive = 'postgres-16.tar'; Source = 'postgres:16'; Destination = 'load-observatory/postgres:16' },
   @{ Archive = 'prometheus.tar'; Source = 'prom/prometheus:v2.54.1'; Destination = 'load-observatory/prometheus:v2.54.1' },
   @{ Archive = 'dcgm-exporter.tar'; Source = 'nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04'; Destination = 'load-observatory/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04' },

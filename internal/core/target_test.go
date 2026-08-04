@@ -41,3 +41,8 @@ func TestValidateRunConfigRejectsUnknownCachePolicy(t *testing.T) {
 		t.Fatal("unknown cache policy accepted")
 	}
 }
+
+func TestValidateRunConfigAcceptsWeightedScenarioAndStages(t *testing.T) {
+	err := ValidateRunConfig(RunConfig{Mode: LoadModeRPS, RPS: 10, DurationSeconds: 5, MaxTokens: 1, MaxInFlight: 3, WarmupRequests: 2, CooldownSeconds: 1, Stages: []LoadStage{{DurationSeconds: 2, TargetLoad: 5}}, Scenario: []ScenarioTask{{Name: "coding", Prompt: "write code", Weight: 3, ThinkTimeMillis: 10}}})
+	if err != nil { t.Fatal(err) }
+}

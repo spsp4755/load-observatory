@@ -18,22 +18,27 @@ import (
 )
 
 type measurements struct {
-	mu           sync.Mutex
-	started      time.Time
-	successes    int64
-	failures     int64
-	latencies    []int64
-	ttfts        []int64
-	statusCounts map[string]int64
-	errors       []string
-	tokens       core.TokenUsage
-	timeline     map[int64]*timelineMeasurement
-	sequence     atomic.Int64
+	mu                                    sync.Mutex
+	started                               time.Time
+	successes, failures, goodput, dropped int64
+	sessions, completedSessions           int64
+	latencies, ttfts, ttfos, itls, tpots  []int64
+	statusCounts                          map[string]int64
+	errors                                []string
+	tokens                                core.TokenUsage
+	timeline                              map[int64]*timelineMeasurement
+	sequence                              atomic.Int64
+	stop                                  context.CancelFunc
+	stopped                               bool
+	guardrail                             string
 }
-
 type timelineMeasurement struct {
 	requests, successes, failures int64
 	latencies                     []int64
+}
+type modelTiming struct {
+	ttft, ttfo, tpot int64
+	itls             []int64
 }
 
 func Run(ctx context.Context, targetURL string, config core.RunConfig) core.RunResult {
@@ -41,50 +46,138 @@ func Run(ctx context.Context, targetURL string, config core.RunConfig) core.RunR
 }
 
 func RunTarget(ctx context.Context, target core.Target, config core.RunConfig) core.RunResult {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.DurationSeconds)*time.Second)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
 	m := &measurements{started: time.Now(), statusCounts: map[string]int64{}, timeline: map[int64]*timelineMeasurement{}}
+	m.stop = cancel
 	client := &http.Client{}
-	if config.Mode == core.LoadModeRPS {
-		runRPS(ctx, client, target, config, m)
-	} else {
-		var workers sync.WaitGroup
-		for range config.VUs {
-			workers.Add(1)
-			go func() { defer workers.Done(); runWorker(ctx, client, target, config, m) }()
+	for range config.WarmupRequests {
+		doRequest(ctx, client, target, config, m)
+	}
+	m.reset()
+	stages := config.Stages
+	if len(stages) == 0 {
+		stages = []core.LoadStage{{DurationSeconds: config.DurationSeconds, TargetLoad: load(config)}}
+	}
+	for _, stage := range stages {
+		if ctx.Err() != nil {
+			break
 		}
-		workers.Wait()
+		stageConfig := config
+		stageConfig.DurationSeconds = stage.DurationSeconds
+		if config.Mode == core.LoadModeRPS {
+			stageConfig.RPS = stage.TargetLoad
+		} else {
+			stageConfig.VUs = stage.TargetLoad
+		}
+		stageCtx, stop := context.WithTimeout(ctx, time.Duration(stage.DurationSeconds)*time.Second)
+		if config.Mode == core.LoadModeRPS {
+			runRPS(stageCtx, client, target, stageConfig, m)
+		} else {
+			runVUs(stageCtx, client, target, stageConfig, m)
+		}
+		stop()
+	}
+	if config.CooldownSeconds > 0 && ctx.Err() == nil {
+		select {
+		case <-time.After(time.Duration(config.CooldownSeconds) * time.Second):
+		case <-ctx.Done():
+		}
 	}
 	return m.result()
 }
-
+func load(config core.RunConfig) int {
+	if config.Mode == core.LoadModeRPS {
+		return config.RPS
+	}
+	return config.VUs
+}
+func runVUs(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+	var wg sync.WaitGroup
+	for range config.VUs {
+		wg.Add(1)
+		go func() { defer wg.Done(); runWorker(ctx, client, target, config, m) }()
+	}
+	wg.Wait()
+}
 func runRPS(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
 	interval := time.Second / time.Duration(config.RPS)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var workers sync.WaitGroup
+	var wg sync.WaitGroup
+	limit := config.MaxInFlight
+	if limit == 0 {
+		limit = core.MaxVUs
+	}
+	inFlight := make(chan struct{}, limit)
 	for {
 		select {
 		case <-ctx.Done():
-			workers.Wait()
+			wg.Wait()
 			return
 		case <-ticker.C:
-			workers.Add(1)
-			go func() { defer workers.Done(); doRequest(ctx, client, target, config, m) }()
+			select {
+			case inFlight <- struct{}{}:
+			default:
+				m.recordDropped()
+				continue
+			}
+			wg.Add(1)
+			go func() { defer wg.Done(); defer func() { <-inFlight }(); doRequest(ctx, client, target, config, m) }()
+		}
+	}
+}
+func runWorker(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+	if config.AgentWorkflow {
+		for ctx.Err() == nil {
+			runAgentSession(ctx, client, target, config, m)
+		}
+		return
+	}
+	for ctx.Err() == nil {
+		if wait := doRequest(ctx, client, target, config, m); wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+			}
 		}
 	}
 }
 
-func runWorker(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
-	for ctx.Err() == nil {
-		doRequest(ctx, client, target, config, m)
+func runAgentSession(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+	if len(config.Scenario) == 0 {
+		return
 	}
+	m.startSession()
+	before := m.successCount()
+	for _, task := range config.Scenario {
+		if ctx.Err() != nil {
+			return
+		}
+		step := config
+		step.Prompt = task.Prompt
+		step.Scenario = nil
+		if task.MaxTokens > 0 {
+			step.MaxTokens = task.MaxTokens
+		}
+		wait := doRequest(ctx, client, target, step, m)
+		if task.ThinkTimeMillis > 0 {
+			wait = time.Duration(task.ThinkTimeMillis) * time.Millisecond
+		}
+		if wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+	m.completeSession(m.successCount()-before == int64(len(config.Scenario)))
 }
 
-func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) time.Duration {
 	started := time.Now()
-	sequence, varied := m.nextVariation(config)
+	sequence, varied, prompt, think := m.nextWorkload(config)
 	method, body := http.MethodGet, io.Reader(nil)
 	requestURL := target.URL
 	if varied && target.Type == core.TargetTypeWeb {
@@ -96,39 +189,20 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	}
 	if target.Type == core.TargetTypeModel || strings.HasSuffix(target.URL, "/v1/chat/completions") {
 		method = http.MethodPost
-		prompt := config.Prompt
 		if varied {
 			prompt += fmt.Sprintf("\n\n[Load Observatory variation run=%s request=%d]", config.WorkloadID, sequence)
 		}
-		requestPayload := struct {
-			Model    string `json:"model"`
-			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"messages"`
-			MaxTokens     int  `json:"max_tokens"`
-			Stream        bool `json:"stream"`
-			StreamOptions struct {
-				IncludeUsage bool `json:"include_usage"`
-			} `json:"stream_options"`
-		}{Model: target.Model, Messages: []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}{{Role: "user", Content: prompt}}, MaxTokens: config.MaxTokens, Stream: target.Type == core.TargetTypeModel}
-		if target.Type == core.TargetTypeModel {
-			requestPayload.StreamOptions.IncludeUsage = true
-		}
-		payload, err := json.Marshal(requestPayload)
+		payload, err := json.Marshal(map[string]any{"model": target.Model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "max_tokens": config.MaxTokens, "stream": target.Type == core.TargetTypeModel, "stream_options": map[string]bool{"include_usage": true}})
 		if err != nil {
 			m.recordFailure(time.Since(started).Milliseconds(), "encode request")
-			return
+			return 0
 		}
 		body = bytes.NewReader(payload)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		m.recordFailure(time.Since(started).Milliseconds(), "create request")
-		return
+		return 0
 	}
 	if method == http.MethodPost {
 		request.Header.Set("Content-Type", "application/json")
@@ -137,22 +211,22 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		request.Header.Set("Authorization", "Bearer "+target.APIKey)
 	}
 	response, err := client.Do(request)
-	ttft := time.Since(started).Milliseconds()
 	if err != nil {
 		if ctx.Err() == nil {
 			m.recordFailure(time.Since(started).Milliseconds(), err.Error())
 		}
-		return
+		return 0
 	}
+	timing := modelTiming{ttft: time.Since(started).Milliseconds()}
 	usage := core.TokenUsage{}
 	if target.Type == core.TargetTypeModel && response.StatusCode >= 200 && response.StatusCode < 400 {
-		var readErr error
-		ttft, usage, readErr = readModelResponse(response, started)
-		if readErr != nil {
+		timing, usage, err = readModelResponse(response, started)
+		if err != nil {
+			_ = response.Body.Close()
 			if ctx.Err() == nil {
-				m.recordFailure(time.Since(started).Milliseconds(), readErr.Error())
+				m.recordFailure(time.Since(started).Milliseconds(), err.Error())
 			}
-			return
+			return 0
 		}
 	} else {
 		_, _ = io.Copy(io.Discard, response.Body)
@@ -161,17 +235,21 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	latency := time.Since(started).Milliseconds()
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
 		m.recordFailureWithStatus(latency, response.StatusCode, "HTTP "+response.Status)
-		return
+		return 0
 	}
-	m.recordSuccess(latency, ttft, response.StatusCode, usage)
+	m.recordSuccess(latency, timing, response.StatusCode, usage, config)
+	return think
 }
 
-func readModelResponse(response *http.Response, started time.Time) (int64, core.TokenUsage, error) {
+func readModelResponse(response *http.Response, started time.Time) (modelTiming, core.TokenUsage, error) {
 	if !strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
-		return readModelJSON(response.Body, time.Since(started).Milliseconds())
+		usage, err := readModelJSON(response.Body)
+		elapsed := time.Since(started).Milliseconds()
+		return modelTiming{ttft: elapsed, ttfo: elapsed}, usage, err
 	}
 	var usage core.TokenUsage
-	ttft := int64(0)
+	timing := modelTiming{}
+	var lastChunk time.Time
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for scanner.Scan() {
@@ -189,20 +267,42 @@ func readModelResponse(response *http.Response, started time.Time) (int64, core.
 			Usage modelUsage `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
-			return 0, usage, fmt.Errorf("decode model stream: %w", err)
+			return timing, usage, fmt.Errorf("decode model stream: %w", err)
 		}
-		if ttft == 0 && len(event.Choices) > 0 && (event.Choices[0].Delta.Content != "" || event.Choices[0].Delta.ReasoningContent != "") {
-			ttft = time.Since(started).Milliseconds()
+		now := time.Now()
+		if len(event.Choices) > 0 {
+			delta := event.Choices[0].Delta
+			if delta.Content != "" || delta.ReasoningContent != "" {
+				if timing.ttft == 0 {
+					timing.ttft = now.Sub(started).Milliseconds()
+				}
+				if !lastChunk.IsZero() {
+					timing.itls = append(timing.itls, now.Sub(lastChunk).Milliseconds())
+				}
+				lastChunk = now
+				if timing.ttfo == 0 && delta.Content != "" {
+					timing.ttfo = now.Sub(started).Milliseconds()
+				}
+			}
 		}
 		usage = event.Usage.tokenUsage()
 	}
 	if err := scanner.Err(); err != nil {
-		return 0, usage, fmt.Errorf("read model stream: %w", err)
+		return timing, usage, fmt.Errorf("read model stream: %w", err)
 	}
-	if ttft == 0 {
-		ttft = time.Since(started).Milliseconds()
+	if timing.ttft == 0 {
+		timing.ttft = time.Since(started).Milliseconds()
 	}
-	return ttft, usage, nil
+	if timing.ttfo == 0 {
+		timing.ttfo = timing.ttft
+	}
+	if usage.Completion > 1 {
+		timing.tpot = (time.Since(started).Milliseconds() - timing.ttfo) / (usage.Completion - 1)
+	}
+	if timing.tpot == 0 && len(timing.itls) > 0 {
+		timing.tpot = average(timing.itls)
+	}
+	return timing, usage, nil
 }
 
 type modelUsage struct {
@@ -214,60 +314,147 @@ type modelUsage struct {
 	} `json:"completion_tokens_details"`
 }
 
-func (usage modelUsage) tokenUsage() core.TokenUsage {
-	reasoning := usage.ReasoningTokens
-	if reasoning == 0 {
-		reasoning = usage.Details.ReasoningTokens
+func (u modelUsage) tokenUsage() core.TokenUsage {
+	r := u.ReasoningTokens
+	if r == 0 {
+		r = u.Details.ReasoningTokens
 	}
-	return core.TokenUsage{Prompt: usage.PromptTokens, Completion: usage.CompletionTokens, Reasoning: reasoning}
+	return core.TokenUsage{Prompt: u.PromptTokens, Completion: u.CompletionTokens, Reasoning: r}
 }
-
-func readModelJSON(body io.Reader, ttft int64) (int64, core.TokenUsage, error) {
+func readModelJSON(body io.Reader) (core.TokenUsage, error) {
 	var payload struct {
 		Usage modelUsage `json:"usage"`
 	}
 	if err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&payload); err != nil && err != io.EOF {
-		return 0, core.TokenUsage{}, fmt.Errorf("decode model response: %w", err)
+		return core.TokenUsage{}, fmt.Errorf("decode model response: %w", err)
 	}
-	return ttft, payload.Usage.tokenUsage(), nil
+	return payload.Usage.tokenUsage(), nil
 }
 
-func (m *measurements) nextVariation(config core.RunConfig) (int64, bool) {
+func (m *measurements) nextWorkload(config core.RunConfig) (int64, bool, string, time.Duration) {
 	sequence := m.sequence.Add(1)
+	prompt := config.Prompt
+	think := time.Duration(0)
+	if len(config.Scenario) > 0 {
+		total := 0
+		for _, task := range config.Scenario {
+			total += task.Weight
+		}
+		pick := int(sequence % int64(total))
+		for _, task := range config.Scenario {
+			pick -= task.Weight
+			if pick < 0 {
+				prompt = task.Prompt
+				think = time.Duration(task.ThinkTimeMillis) * time.Millisecond
+				break
+			}
+		}
+	}
 	policy := config.CachePolicy
 	if policy == "" {
 		policy = core.CachePolicyReuse
 	}
-	if policy == core.CachePolicyBypass {
-		return sequence, true
+	varied := policy == core.CachePolicyBypass
+	if policy == core.CachePolicyMixed {
+		percent := config.VariationPercent
+		if percent == 0 {
+			percent = 30
+		}
+		varied = (sequence*37)%100 < int64(percent)
 	}
-	if policy == core.CachePolicyReuse {
-		return sequence, false
-	}
-	percent := config.VariationPercent
-	if percent == 0 {
-		percent = 30
-	}
-	return sequence, (sequence*37)%100 < int64(percent)
+	return sequence, varied, prompt, think
 }
-
-func (m *measurements) recordSuccess(latency, ttft int64, status int, usage core.TokenUsage) {
+func (m *measurements) reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.started = time.Now()
+	m.successes = 0
+	m.failures = 0
+	m.goodput = 0
+	m.dropped = 0
+	m.sessions = 0
+	m.completedSessions = 0
+	m.stopped = false
+	m.guardrail = ""
+	m.latencies = nil
+	m.ttfts = nil
+	m.ttfos = nil
+	m.itls = nil
+	m.tpots = nil
+	m.statusCounts = map[string]int64{}
+	m.errors = nil
+	m.tokens = core.TokenUsage{}
+	m.timeline = map[int64]*timelineMeasurement{}
+}
+func (m *measurements) recordSuccess(latency int64, timing modelTiming, status int, usage core.TokenUsage, config core.RunConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.successes++
 	m.latencies = append(m.latencies, latency)
-	m.ttfts = append(m.ttfts, ttft)
+	m.ttfts = append(m.ttfts, timing.ttft)
+	m.ttfos = append(m.ttfos, timing.ttfo)
+	m.itls = append(m.itls, timing.itls...)
+	if timing.tpot > 0 {
+		m.tpots = append(m.tpots, timing.tpot)
+	}
 	m.statusCounts[fmt.Sprintf("%d", status)]++
 	m.tokens.Prompt += usage.Prompt
 	m.tokens.Completion += usage.Completion
 	m.tokens.Reasoning += usage.Reasoning
+	if meetsSLO(latency, timing, usage, config) {
+		m.goodput++
+	}
 	m.recordTimeline(latency, true)
+	m.maybeStopLocked(config)
 }
 
+func (m *measurements) maybeStopLocked(config core.RunConfig) {
+	if m.stopped || m.successes < 10 {
+		return
+	}
+	message := ""
+	if config.MaxP95Millis > 0 && p95(m.latencies) > config.MaxP95Millis {
+		message = "E2E P95 SLO exceeded"
+	}
+	if message == "" && config.MaxTTFTP95Millis > 0 && p95(m.ttfts) > config.MaxTTFTP95Millis {
+		message = "TTFT P95 SLO exceeded"
+	}
+	if message == "" && config.MaxTTPOTP95Millis > 0 && p95(m.tpots) > config.MaxTTPOTP95Millis {
+		message = "TPOT P95 SLO exceeded"
+	}
+	if message == "" && config.MinGoodputPercent > 0 && float64(m.goodput)*100/float64(m.successes) < config.MinGoodputPercent {
+		message = "goodput SLO not met"
+	}
+	if message != "" {
+		m.stopped = true
+		m.guardrail = message
+		if m.stop != nil {
+			m.stop()
+		}
+	}
+}
+func meetsSLO(latency int64, timing modelTiming, usage core.TokenUsage, config core.RunConfig) bool {
+	if config.MaxP95Millis > 0 && latency > config.MaxP95Millis || config.MaxTTFTP95Millis > 0 && timing.ttft > config.MaxTTFTP95Millis || config.MaxTTPOTP95Millis > 0 && timing.tpot > config.MaxTTPOTP95Millis {
+		return false
+	}
+	if config.MinOutputTokensPerSecond > 0 && latency > 0 && float64(usage.Completion)*1000/float64(latency) < config.MinOutputTokensPerSecond {
+		return false
+	}
+	return true
+}
+func (m *measurements) recordDropped() { m.mu.Lock(); defer m.mu.Unlock(); m.dropped++ }
+func (m *measurements) startSession()  { m.mu.Lock(); defer m.mu.Unlock(); m.sessions++ }
+func (m *measurements) completeSession(completed bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if completed {
+		m.completedSessions++
+	}
+}
+func (m *measurements) successCount() int64 { m.mu.Lock(); defer m.mu.Unlock(); return m.successes }
 func (m *measurements) recordFailure(latency int64, message string) {
 	m.recordFailureWithStatus(latency, 0, message)
 }
-
 func (m *measurements) recordFailureWithStatus(latency int64, status int, message string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -283,7 +470,6 @@ func (m *measurements) recordFailureWithStatus(latency int64, status int, messag
 	}
 	m.recordTimeline(latency, false)
 }
-
 func (m *measurements) recordTimeline(latency int64, success bool) {
 	second := int64(time.Since(m.started).Seconds())
 	point := m.timeline[second]
@@ -302,7 +488,6 @@ func (m *measurements) recordTimeline(latency int64, success bool) {
 		point.failures++
 	}
 }
-
 func (m *measurements) result() core.RunResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -317,9 +502,12 @@ func (m *measurements) result() core.RunResult {
 	if elapsed > 0 {
 		tokens.OutputPerSecond = float64(tokens.Completion) / elapsed
 	}
-	return core.RunResult{Successes: m.successes, Failures: m.failures, P95Millis: p95(m.latencies), TTFTP95Millis: p95(m.ttfts), Total: total, ThroughputRPS: float64(total) / elapsed, Latency: distribution(m.latencies), TTFT: distribution(m.ttfts), Tokens: tokens, StatusCounts: m.statusCounts, Errors: m.errors, Timeline: timeline}
+	goodput := float64(0)
+	if m.successes > 0 {
+		goodput = float64(m.goodput) * 100 / float64(m.successes)
+	}
+	return core.RunResult{Successes: m.successes, Failures: m.failures, P95Millis: p95(m.latencies), TTFTP95Millis: p95(m.ttfts), Total: total, ThroughputRPS: float64(total) / elapsed, Latency: distribution(m.latencies), TTFT: distribution(m.ttfts), TTFO: distribution(m.ttfos), ITL: distribution(m.itls), TPOT: distribution(m.tpots), Tokens: tokens, GoodputPercent: goodput, DroppedArrivals: m.dropped, StoppedByGuardrail: m.stopped, GuardrailMessage: m.guardrail, AgentSessions: m.sessions, CompletedSessions: m.completedSessions, StatusCounts: m.statusCounts, Errors: m.errors, Timeline: timeline}
 }
-
 func p95(values []int64) int64 {
 	if len(values) == 0 {
 		return 0
@@ -328,20 +516,24 @@ func p95(values []int64) int64 {
 	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i] < copyValues[j] })
 	return copyValues[(len(copyValues)*95+99)/100-1]
 }
-
 func distribution(values []int64) core.Distribution {
 	if len(values) == 0 {
 		return core.Distribution{}
 	}
 	copyValues := append([]int64(nil), values...)
 	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i] < copyValues[j] })
-	var sum int64
-	for _, value := range copyValues {
-		sum += value
-	}
-	return core.Distribution{MinMillis: copyValues[0], AvgMillis: sum / int64(len(copyValues)), P50Millis: percentile(copyValues, 50), P95Millis: percentile(copyValues, 95), P99Millis: percentile(copyValues, 99), MaxMillis: copyValues[len(copyValues)-1]}
+	return core.Distribution{MinMillis: copyValues[0], AvgMillis: average(copyValues), P50Millis: percentile(copyValues, 50), P95Millis: percentile(copyValues, 95), P99Millis: percentile(copyValues, 99), MaxMillis: copyValues[len(copyValues)-1]}
 }
-
+func average(values []int64) int64 {
+	var sum int64
+	for _, v := range values {
+		sum += v
+	}
+	if len(values) == 0 {
+		return 0
+	}
+	return sum / int64(len(values))
+}
 func percentile(sorted []int64, percentage int) int64 {
 	return sorted[(len(sorted)*percentage+99)/100-1]
 }

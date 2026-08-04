@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -143,6 +144,66 @@ func TestRunTargetMeasuresFirstTokenFromStreamingModelResponse(t *testing.T) {
 	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, Prompt: "test", MaxTokens: 32})
 	if result.Successes == 0 || result.TTFTP95Millis == 0 || result.Tokens.Completion == 0 {
 		t.Fatalf("expected streaming first-token and token metrics, got %+v", result)
+	}
+}
+
+func TestRunTargetCollectsStreamingCadenceAndGoodput(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n"))
+		if flush, ok := w.(http.Flusher); ok {
+			flush.Flush()
+		}
+		time.Sleep(10 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n"))
+		if flush, ok := w.(http.Flusher); ok {
+			flush.Flush()
+		}
+		time.Sleep(10 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" more\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8}}\n\ndata: [DONE]\n\n"))
+	}))
+	defer target.Close()
+
+	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, Prompt: "test", MaxTokens: 8})
+	if result.TTFO.P95Millis == 0 || result.ITL.P95Millis == 0 || result.TPOT.P95Millis == 0 || result.GoodputPercent == 0 {
+		t.Fatalf("expected streaming cadence metrics, got %+v", result)
+	}
+}
+
+func TestRunTargetDropsRPSArrivalsBeyondInFlightLimit(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	result := Run(context.Background(), target.URL, core.RunConfig{Mode: core.LoadModeRPS, RPS: 100, DurationSeconds: 1, MaxInFlight: 1})
+	if result.DroppedArrivals == 0 || result.Total == 0 {
+		t.Fatalf("expected limited in-flight requests and dropped arrivals, got %+v", result)
+	}
+}
+
+func TestRunTargetCompletesAgentSessionsInSequence(t *testing.T) {
+	var prompts []string
+	var mu sync.Mutex
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		mu.Lock()
+		prompts = append(prompts, request.Messages[0].Content)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
+	}))
+	defer target.Close()
+	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1, Prompt: "base", MaxTokens: 8, AgentWorkflow: true, Scenario: []core.ScenarioTask{{Name: "search", Prompt: "tool: searched files", Weight: 1}, {Name: "edit", Prompt: "tool: patch applied", Weight: 1}}})
+	mu.Lock()
+	defer mu.Unlock()
+	if result.AgentSessions == 0 || result.CompletedSessions == 0 || len(prompts) < 2 || prompts[0] != "tool: searched files" || prompts[1] != "tool: patch applied" {
+		t.Fatalf("agent workflow not sequential: result=%+v prompts=%v", result, prompts)
 	}
 }
 

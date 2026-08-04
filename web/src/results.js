@@ -7,6 +7,14 @@ export function getVerdict(run) {
   const p95 = result.latency?.p95_millis ?? result.p95_millis ?? 0;
   const errorLimit = run.config?.max_error_percent ?? 2;
   const p95Limit = run.config?.max_p95_millis ?? 2000;
+  const ttftLimit = run.config?.max_ttft_p95_millis || 0;
+  const tpotLimit = run.config?.max_tpot_p95_millis || 0;
+  const goodputLimit = run.config?.min_goodput_percent || 0;
+  const ttft = result.ttft?.p95_millis || 0;
+  const tpot = result.tpot?.p95_millis || 0;
+  const goodput = result.goodput_percent || 0;
+  if (result.dropped_arrivals > 0) return { status: "at-risk", recommendation: `요청 ${result.dropped_arrivals}건이 최대 진행 요청 제한으로 시작되지 않았습니다. 이 구간은 테스트 실행기 용량도 함께 늘려야 합니다.` };
+  if ((ttftLimit && ttft > ttftLimit) || (tpotLimit && tpot > tpotLimit) || (goodputLimit && goodput < goodputLimit)) return { status: "at-risk", recommendation: "LLM 응답 체감 성능 SLO를 충족하지 못했습니다. TTFT·TPOT·Goodput을 확인하세요." };
   if (errorRate > errorLimit || p95 > p95Limit) return { status: "at-risk", recommendation: "현재 부하는 위험 구간입니다. 동시 사용자 또는 요청률을 낮춰 재측정하세요." };
   const load = run.config?.mode === "rps" ? `${run.config.rps} RPS` : `${run.config?.vus || 0} VU`;
   return { status: "stable", recommendation: `${load}까지는 현재 기준에서 안정적입니다. 더 높은 단계로 재시험해 한계를 확인하세요.` };

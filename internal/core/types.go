@@ -40,21 +40,42 @@ type Target struct {
 }
 
 type RunConfig struct {
-	TargetID                 string      `json:"target_id"`
-	Mode                     LoadMode    `json:"mode"`
-	VUs                      int         `json:"vus"`
-	RPS                      int         `json:"rps"`
-	DurationSeconds          int         `json:"duration_seconds"`
-	Prompt                   string      `json:"prompt"`
-	MaxTokens                int         `json:"max_tokens"`
-	MaxErrorPercent          float64     `json:"max_error_percent"`
-	MaxP95Millis             int64       `json:"max_p95_millis"`
-	MaxTTFTP95Millis         int64       `json:"max_ttft_p95_millis,omitempty"`
-	MinOutputTokensPerSecond float64     `json:"min_output_tokens_per_second,omitempty"`
-	CachePolicy              CachePolicy `json:"cache_policy"`
-	VariationPercent         int         `json:"variation_percent"`
-	WorkloadID               string      `json:"workload_id,omitempty"`
-	Shards                   int         `json:"shards,omitempty"`
+	TargetID                 string         `json:"target_id"`
+	Mode                     LoadMode       `json:"mode"`
+	VUs                      int            `json:"vus"`
+	RPS                      int            `json:"rps"`
+	DurationSeconds          int            `json:"duration_seconds"`
+	Prompt                   string         `json:"prompt"`
+	MaxTokens                int            `json:"max_tokens"`
+	MaxErrorPercent          float64        `json:"max_error_percent"`
+	MaxP95Millis             int64          `json:"max_p95_millis"`
+	MaxTTFTP95Millis         int64          `json:"max_ttft_p95_millis,omitempty"`
+	MinOutputTokensPerSecond float64        `json:"min_output_tokens_per_second,omitempty"`
+	CachePolicy              CachePolicy    `json:"cache_policy"`
+	VariationPercent         int            `json:"variation_percent"`
+	WorkloadID               string         `json:"workload_id,omitempty"`
+	Shards                   int            `json:"shards,omitempty"`
+	MaxInFlight              int            `json:"max_in_flight,omitempty"`
+	WarmupRequests           int            `json:"warmup_requests,omitempty"`
+	CooldownSeconds          int            `json:"cooldown_seconds,omitempty"`
+	MaxTTPOTP95Millis        int64          `json:"max_tpot_p95_millis,omitempty"`
+	MinGoodputPercent        float64        `json:"min_goodput_percent,omitempty"`
+	Stages                   []LoadStage    `json:"stages,omitempty"`
+	Scenario                 []ScenarioTask `json:"scenario,omitempty"`
+	AgentWorkflow            bool           `json:"agent_workflow,omitempty"`
+}
+
+type LoadStage struct {
+	DurationSeconds int `json:"duration_seconds"`
+	TargetLoad      int `json:"target_load"`
+}
+
+type ScenarioTask struct {
+	Name            string `json:"name"`
+	Prompt          string `json:"prompt"`
+	Weight          int    `json:"weight"`
+	ThinkTimeMillis int    `json:"think_time_millis,omitempty"`
+	MaxTokens       int    `json:"max_tokens,omitempty"`
 }
 
 type Distribution struct {
@@ -82,19 +103,28 @@ type TimelinePoint struct {
 }
 
 type RunResult struct {
-	Successes     int64            `json:"successes"`
-	Failures      int64            `json:"failures"`
-	P95Millis     int64            `json:"p95_millis"`
-	TTFTP95Millis int64            `json:"ttft_p95_millis"`
-	Total         int64            `json:"total"`
-	ThroughputRPS float64          `json:"throughput_rps"`
-	Latency       Distribution     `json:"latency"`
-	TTFT          Distribution     `json:"ttft"`
-	Tokens        TokenUsage       `json:"tokens"`
-	StatusCounts  map[string]int64 `json:"status_counts"`
-	Errors        []string         `json:"errors"`
-	Timeline      []TimelinePoint  `json:"timeline"`
-	LatencyScope  string           `json:"latency_scope,omitempty"`
+	Successes          int64            `json:"successes"`
+	Failures           int64            `json:"failures"`
+	P95Millis          int64            `json:"p95_millis"`
+	TTFTP95Millis      int64            `json:"ttft_p95_millis"`
+	Total              int64            `json:"total"`
+	ThroughputRPS      float64          `json:"throughput_rps"`
+	Latency            Distribution     `json:"latency"`
+	TTFT               Distribution     `json:"ttft"`
+	TTFO               Distribution     `json:"ttfo"`
+	ITL                Distribution     `json:"itl"`
+	TPOT               Distribution     `json:"tpot"`
+	Tokens             TokenUsage       `json:"tokens"`
+	GoodputPercent     float64          `json:"goodput_percent"`
+	DroppedArrivals    int64            `json:"dropped_arrivals"`
+	StoppedByGuardrail bool             `json:"stopped_by_guardrail"`
+	GuardrailMessage   string           `json:"guardrail_message,omitempty"`
+	AgentSessions      int64            `json:"agent_sessions,omitempty"`
+	CompletedSessions  int64            `json:"completed_sessions,omitempty"`
+	StatusCounts       map[string]int64 `json:"status_counts"`
+	Errors             []string         `json:"errors"`
+	Timeline           []TimelinePoint  `json:"timeline"`
+	LatencyScope       string           `json:"latency_scope,omitempty"`
 }
 
 type MonitoringSample struct {

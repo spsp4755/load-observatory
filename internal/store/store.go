@@ -396,7 +396,7 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		}
 	}
 	merged := core.RunResult{StatusCounts: map[string]int64{}}
-	var latencyWeight, ttftWeight int64
+	var latencyWeight, ttftWeight, ttfoWeight, tpotWeight, itlWeight int64
 	for shardID, item := range s.shards {
 		if item.RunID != run.ID {
 			continue
@@ -405,6 +405,9 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.Successes += value.Successes
 		merged.Failures += value.Failures
 		merged.Total += value.Total
+		merged.DroppedArrivals += value.DroppedArrivals
+		merged.AgentSessions += value.AgentSessions
+		merged.CompletedSessions += value.CompletedSessions
 		merged.Tokens.Prompt += value.Tokens.Prompt
 		merged.Tokens.Completion += value.Tokens.Completion
 		merged.Tokens.Reasoning += value.Tokens.Reasoning
@@ -413,14 +416,24 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		if value.Successes > 0 {
 			merged.Latency = mergeDistribution(merged.Latency, value.Latency, latencyWeight, value.Successes)
 			merged.TTFT = mergeDistribution(merged.TTFT, value.TTFT, ttftWeight, value.Successes)
+			merged.TTFO = mergeDistribution(merged.TTFO, value.TTFO, ttfoWeight, value.Successes)
+			merged.TPOT = mergeDistribution(merged.TPOT, value.TPOT, tpotWeight, value.Successes)
+			merged.ITL = mergeDistribution(merged.ITL, value.ITL, itlWeight, value.Successes)
 			latencyWeight += value.Successes
 			ttftWeight += value.Successes
+			ttfoWeight += value.Successes
+			tpotWeight += value.Successes
+			itlWeight += value.Successes
+			merged.GoodputPercent += value.GoodputPercent * float64(value.Successes)
 		}
 		for code, count := range value.StatusCounts {
 			merged.StatusCounts[code] += count
 		}
 	}
 	merged.P95Millis, merged.TTFTP95Millis = merged.Latency.P95Millis, merged.TTFT.P95Millis
+	if merged.Successes > 0 {
+		merged.GoodputPercent /= float64(merged.Successes)
+	}
 	if run.Config.Shards > 1 {
 		merged.LatencyScope = "worst_shard_p95"
 	}
