@@ -51,6 +51,9 @@ func writeRunCSV(w http.ResponseWriter, item runView) {
 	write("run", "drain_seconds", "", item.Config.DrainSeconds)
 	write("run", "steady_state_seconds", "", item.Config.SteadyStateSeconds)
 	write("run", "cache_policy", "", item.Config.CachePolicy)
+	write("run", "arrival_pattern", "", item.Config.ArrivalPattern)
+	write("run", "output_tokens_stdev", "", item.Config.OutputTokensStdev)
+	write("run", "prompt_pad_tokens", "", item.Config.PromptPadTokens)
 	write("run", "output_length_pinned", "", result.OutputLengthPinned)
 	write("run", "context_accumulated", "", result.ContextAccumulated)
 
@@ -80,6 +83,7 @@ func writeRunCSV(w http.ResponseWriter, item runView) {
 	write("lifecycle", "transport_errors", "", result.TransportErrors)
 	write("lifecycle", "completion_percent", "", result.CompletionPercent)
 	write("lifecycle", "dropped_arrivals", "", result.DroppedArrivals)
+	write("lifecycle", "latency_from_intended_arrival", "", result.LatencyFromIntendedArrival)
 
 	write("throughput", "requests_per_second", "", result.ThroughputRPS)
 	write("throughput", "output_tokens_per_second", "", result.Tokens.OutputPerSecond)
@@ -91,7 +95,7 @@ func writeRunCSV(w http.ResponseWriter, item runView) {
 	write("steady_state", "samples", "", result.SteadySamples)
 	for name, distribution := range map[string]core.Distribution{
 		"latency": result.Latency, "ttft": result.TTFT, "ttfo": result.TTFO,
-		"itl": result.ITL, "tpot": result.TPOT,
+		"itl": result.ITL, "tpot": result.TPOT, "generator_delay": result.GeneratorDelay,
 	} {
 		write("distribution", name, "min_millis", distribution.MinMillis)
 		write("distribution", name, "avg_millis", distribution.AvgMillis)

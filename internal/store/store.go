@@ -454,7 +454,7 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		}
 	}
 	merged := core.RunResult{StatusCounts: map[string]int64{}}
-	var distributionWeight int64
+	var distributionWeight, generatorWeight int64
 	timeline := map[int64]core.TimelinePoint{}
 	scenarios := map[string]*core.ScenarioResult{}
 	scenarioSamples := map[string]*core.RunSamples{}
@@ -480,10 +480,15 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.SteadySamples += value.SteadySamples
 		merged.SteadySeconds = max(merged.SteadySeconds, value.SteadySeconds)
 		merged.DrainedSeconds = max(merged.DrainedSeconds, value.DrainedSeconds)
+		merged.GeneratorDelay = mergeDistribution(merged.GeneratorDelay, value.GeneratorDelay, generatorWeight, value.Total)
+		generatorWeight += value.Total
 		merged.MissingUsageResponses += value.MissingUsageResponses
 		merged.ContentChunks += value.ContentChunks
 		merged.OutputLengthPinned = value.OutputLengthPinned
 		merged.ContextAccumulated = value.ContextAccumulated
+		if value.LatencyFromIntendedArrival {
+			merged.LatencyFromIntendedArrival = true
+		}
 		if value.SamplesDecimated {
 			merged.SamplesDecimated = true
 		}

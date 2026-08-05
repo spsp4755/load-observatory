@@ -79,7 +79,35 @@ type RunConfig struct {
 	// is the dominant driver of real KV cache pressure and of TTFT growth. Off by
 	// default because turning it on changes what is being measured.
 	AccumulateContext bool `json:"accumulate_context,omitempty"`
+	// ArrivalPattern shapes when requests are issued in RPS mode. Real callers do
+	// not arrive on a metronome, and queueing — where TTFT explodes — only appears
+	// under bursty arrivals.
+	ArrivalPattern ArrivalPattern `json:"arrival_pattern,omitempty"`
+	// OutputTokensStdev jitters max_tokens per request so output length varies the
+	// way real traffic does. Exact, because the server honours max_tokens.
+	OutputTokensStdev int `json:"output_tokens_stdev,omitempty"`
+	// PromptPadTokens and PromptPadStdev grow the prompt by roughly that many
+	// tokens. Approximate: without a tokenizer this is estimated from characters,
+	// which is why it is named "pad" rather than a target input length.
+	PromptPadTokens int `json:"prompt_pad_tokens,omitempty"`
+	PromptPadStdev  int `json:"prompt_pad_stdev,omitempty"`
 }
+
+type ArrivalPattern string
+
+const (
+	// ArrivalUniform issues requests on a fixed interval.
+	ArrivalUniform ArrivalPattern = "uniform"
+	// ArrivalPoisson draws exponential gaps around the target rate, which is what
+	// independent callers actually produce.
+	ArrivalPoisson ArrivalPattern = "poisson"
+)
+
+// charsPerTokenEstimate converts a token count to a character count for prompt
+// padding. Shipping a tokenizer would mean keeping per-model vocab files in sync
+// with whatever the serving team deployed, so padding is deliberately
+// approximate and labelled as such.
+const charsPerTokenEstimate = 4
 
 type LoadStage struct {
 	DurationSeconds int `json:"duration_seconds"`
@@ -234,6 +262,16 @@ type RunResult struct {
 	// thinned uniformly, so the percentiles are estimates rather than exact.
 	SamplesDecimated   bool `json:"samples_decimated,omitempty"`
 	ContextAccumulated bool `json:"context_accumulated"`
+	// GeneratorDelay is how long each request waited between the moment it was
+	// scheduled and the moment it actually went out. A rising generator delay means
+	// the load generator, not the target, is the bottleneck.
+	GeneratorDelay Distribution `json:"generator_delay"`
+	// LatencyFromIntendedArrival is true when latency was measured from the moment a
+	// request was scheduled rather than from when it was sent. Measuring from the
+	// send time hides queueing inside the generator, which is coordinated omission:
+	// one stall records a single slow sample instead of every request that should
+	// have been sent during it.
+	LatencyFromIntendedArrival bool `json:"latency_from_intended_arrival,omitempty"`
 }
 
 // MonitoringSample is one second of server-side state. Metrics is a map rather

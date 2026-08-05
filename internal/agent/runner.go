@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -93,7 +94,10 @@ type measurements struct {
 	// Samples from the steady-state window only. These feed every reported
 	// distribution, so ramp-up and warmup cannot flatter the percentiles.
 	latencies, ttfts, ttfos, itls, tpots sampleSet
-	steadySamples                        int64
+	// generatorDelays is the gap between when a request was due and when it went
+	// out. A rising delay means the generator, not the target, is the bottleneck.
+	generatorDelays sampleSet
+	steadySamples   int64
 
 	// Token accounting trust: a response with no usage field cannot be counted.
 	missingUsage, contentChunks int64
@@ -145,11 +149,67 @@ type chatMessage struct {
 // session cannot grow without limit in the Agent's memory.
 const maxAnswerChars = 200000
 
+// charsPerToken mirrors core.charsPerTokenEstimate for prompt padding.
+const charsPerToken = 4
+
 // attempt carries the per-request bookkeeping from issue time to record time.
+// scheduledAt is when the request was *meant* to go out; startedAt is when it
+// actually did. Latency is measured from scheduledAt so that time spent queueing
+// inside the generator lands in the tail instead of disappearing from it.
 type attempt struct {
-	startedAt time.Time
-	scenario  string
-	steady    bool
+	scheduledAt time.Time
+	startedAt   time.Time
+	scenario    string
+	steady      bool
+}
+
+// arrivalSchedule produces the instants at which requests should be issued. In
+// uniform mode that is a fixed interval; in Poisson mode the gaps are exponential
+// with the same mean, which is what independent callers actually produce and is
+// where queueing — and the TTFT explosion that comes with it — shows up.
+type arrivalSchedule struct {
+	pattern  core.ArrivalPattern
+	interval time.Duration
+	sequence atomic.Int64
+}
+
+func newArrivalSchedule(pattern core.ArrivalPattern, ratePerSecond int) *arrivalSchedule {
+	if ratePerSecond < 1 {
+		ratePerSecond = 1
+	}
+	return &arrivalSchedule{pattern: pattern, interval: time.Second / time.Duration(ratePerSecond)}
+}
+
+// next returns the gap until the following arrival. Derived from a hash of a
+// counter rather than a random source, so a repeated run issues the same arrival
+// pattern and two runs stay comparable.
+func (s *arrivalSchedule) next() time.Duration {
+	if s.pattern != core.ArrivalPoisson {
+		return s.interval
+	}
+	// Exponential gap: -ln(U) * mean, with U drawn uniformly from (0,1].
+	digest := fnv.New64a()
+	_, _ = fmt.Fprintf(digest, "arrival#%d", s.sequence.Add(1))
+	uniform := float64(digest.Sum64()%(1<<52)+1) / float64(uint64(1)<<52)
+	gap := -math.Log(uniform) * float64(s.interval)
+	// Cap a pathological draw so one unlucky gap cannot stall the whole stage.
+	if limit := float64(s.interval) * 8; gap > limit {
+		gap = limit
+	}
+	return time.Duration(gap)
+}
+
+// jitter returns a deterministic symmetric offset within stdev, used to vary
+// output length and prompt padding per request. Deterministic so that two runs
+// with the same configuration issue the same workload.
+func jitter(seed string, sequence int64, stdev int) int {
+	if stdev <= 0 {
+		return 0
+	}
+	digest := fnv.New32a()
+	_, _ = fmt.Fprintf(digest, "%s#%d", seed, sequence)
+	span := 2*stdev + 1
+	return int(digest.Sum32()%uint32(span)) - stdev
 }
 
 func Run(ctx context.Context, targetURL string, config core.RunConfig) core.RunResult {
@@ -171,7 +231,7 @@ func RunTargetWithProgress(ctx context.Context, target core.Target, config core.
 	m.stop = cancelRun
 	client := &http.Client{}
 	for range config.WarmupRequests {
-		doRequest(runCtx, client, target, config, m, nil)
+		doRequest(runCtx, client, target, config, m, nil, time.Now())
 	}
 	m.reset()
 
@@ -280,61 +340,65 @@ func runVUs(issueCtx, requestCtx context.Context, client *http.Client, target co
 	wg.Wait()
 }
 func runRPS(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
-	interval := time.Second / time.Duration(config.RPS)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	schedule := newArrivalSchedule(config.ArrivalPattern, config.RPS)
 	var wg sync.WaitGroup
 	limit := config.MaxInFlight
 	if limit == 0 {
 		limit = core.MaxVUs
 	}
 	inFlight := make(chan struct{}, limit)
+	// The schedule advances on its own clock rather than from each wake-up, so a
+	// late wake-up does not push every later arrival back with it.
+	dueAt := time.Now()
 	for {
+		dueAt = dueAt.Add(schedule.next())
 		select {
 		case <-issueCtx.Done():
 			wg.Wait()
 			return
-		case <-ticker.C:
-			select {
-			case inFlight <- struct{}{}:
-			default:
-				m.recordDropped()
-				continue
-			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer func() { <-inFlight }()
-				runJourney(issueCtx, requestCtx, client, target, config, m)
-			}()
+		case <-time.After(time.Until(dueAt)):
 		}
+		select {
+		case inFlight <- struct{}{}:
+		default:
+			m.recordDropped()
+			continue
+		}
+		// The instant this request was due, not the instant a slot freed up.
+		scheduled := dueAt
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-inFlight }()
+			runJourney(issueCtx, requestCtx, client, target, config, m, scheduled)
+		}()
 	}
 }
 func runWorker(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
 	if len(config.Journeys) > 0 {
 		for issueCtx.Err() == nil {
-			runJourney(issueCtx, requestCtx, client, target, config, m)
+			runJourney(issueCtx, requestCtx, client, target, config, m, time.Now())
 		}
 		return
 	}
 	if config.AgentWorkflow {
 		for issueCtx.Err() == nil {
-			runAgentSession(issueCtx, requestCtx, client, target, config, m)
+			runAgentSession(issueCtx, requestCtx, client, target, config, m, time.Now())
 		}
 		return
 	}
 	for issueCtx.Err() == nil {
-		wait, _ := doRequest(requestCtx, client, target, config, m, nil)
+		wait, _ := doRequest(requestCtx, client, target, config, m, nil, time.Now())
 		m.think(issueCtx, wait)
 	}
 }
 
-func runJourney(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+func runJourney(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, scheduled time.Time) {
 	if len(config.Journeys) == 0 {
 		if config.AgentWorkflow {
-			runAgentSession(issueCtx, requestCtx, client, target, config, m)
+			runAgentSession(issueCtx, requestCtx, client, target, config, m, scheduled)
 		} else {
-			doRequest(requestCtx, client, target, config, m, nil)
+			doRequest(requestCtx, client, target, config, m, nil, scheduled)
 		}
 		return
 	}
@@ -343,14 +407,14 @@ func runJourney(issueCtx, requestCtx context.Context, client *http.Client, targe
 	journeyConfig.AgentWorkflow = journey.AgentWorkflow
 	journeyConfig.Scenario = journey.Scenario
 	if journey.AgentWorkflow {
-		runAgentSession(issueCtx, requestCtx, client, target, journeyConfig, m)
+		runAgentSession(issueCtx, requestCtx, client, target, journeyConfig, m, scheduled)
 		return
 	}
-	wait, _ := doRequest(requestCtx, client, target, journeyConfig, m, nil)
+	wait, _ := doRequest(requestCtx, client, target, journeyConfig, m, nil, scheduled)
 	m.think(issueCtx, wait)
 }
 
-func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, scheduled time.Time) {
 	if len(config.Scenario) == 0 {
 		return
 	}
@@ -372,7 +436,7 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 		if task.MaxTokens > 0 {
 			step.MaxTokens = task.MaxTokens
 		}
-		wait, answer := doRequest(requestCtx, client, target, step, m, history)
+		wait, answer := doRequest(requestCtx, client, target, step, m, history, scheduled)
 		if config.AccumulateContext {
 			history = append(history,
 				chatMessage{Role: "user", Content: task.Prompt},
@@ -389,9 +453,9 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 	m.completeSession(m.successCount()-before == int64(len(config.Scenario)))
 }
 
-func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, history []chatMessage) (time.Duration, string) {
+func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, history []chatMessage, scheduled time.Time) (time.Duration, string) {
 	sequence, varied, name, prompt, think, maxTokens := m.nextWorkload(config)
-	call := m.beginAttempt(name)
+	call := m.beginAttempt(name, scheduled)
 	m.active.Add(1)
 	defer m.active.Add(-1)
 	method, body := http.MethodGet, io.Reader(nil)
@@ -450,7 +514,7 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		_, _ = io.Copy(io.Discard, response.Body)
 	}
 	_ = response.Body.Close()
-	latency := time.Since(call.startedAt).Milliseconds()
+	latency := time.Since(call.scheduledAt).Milliseconds()
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
 		m.recordHTTPFailure(call, latency, response.StatusCode, "HTTP "+response.Status)
 		return 0, ""
@@ -616,6 +680,16 @@ func (m *measurements) nextWorkload(config core.RunConfig) (int64, bool, string,
 			}
 		}
 	}
+	// Real traffic does not use one output length or one prompt size. Jitter both
+	// deterministically so the shape is realistic yet the run stays reproducible.
+	if spread := jitter("osl", sequence, config.OutputTokensStdev); spread != 0 {
+		if jittered := maxTokens + spread; jittered >= 1 {
+			maxTokens = jittered
+		}
+	}
+	if pad := config.PromptPadTokens + jitter("isl", sequence, config.PromptPadStdev); pad > 0 {
+		prompt += "\n\n" + promptFiller(sequence, pad)
+	}
 	policy := config.CachePolicy
 	if policy == "" {
 		policy = core.CachePolicyReuse
@@ -730,6 +804,7 @@ func (m *measurements) reset() {
 	m.ttfos = sampleSet{}
 	m.itls = sampleSet{}
 	m.tpots = sampleSet{}
+	m.generatorDelays = sampleSet{}
 	m.steadySamples = 0
 	m.missingUsage = 0
 	m.contentChunks = 0
@@ -744,11 +819,16 @@ func (m *measurements) reset() {
 // beginAttempt records that a request was issued and decides up front whether it
 // belongs to the steady-state window, so a request started during ramp-up stays
 // excluded from the percentiles even if it finishes much later.
-func (m *measurements) beginAttempt(scenario string) attempt {
+func (m *measurements) beginAttempt(scenario string, scheduled time.Time) attempt {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-	offset := now.Sub(m.started)
+	if scheduled.IsZero() || scheduled.After(now) {
+		scheduled = now
+	}
+	// Classify by when the request was due, not when a slot freed up, so a request
+	// that should have gone out during the ramp stays out of the steady window.
+	offset := scheduled.Sub(m.started)
 	m.issued++
 	if point := m.timelineAtLocked(int64(offset.Seconds())); point != nil {
 		point.issued++
@@ -756,7 +836,8 @@ func (m *measurements) beginAttempt(scenario string) attempt {
 	if scenario != "" {
 		m.scenarioLocked(scenario).issued++
 	}
-	return attempt{startedAt: now, scenario: scenario, steady: offset >= m.steadyAfter}
+	m.generatorDelays.add(now.Sub(scheduled).Milliseconds())
+	return attempt{scheduledAt: scheduled, startedAt: now, scenario: scenario, steady: offset >= m.steadyAfter}
 }
 
 func (m *measurements) scenarioLocked(name string) *scenarioMeasurement {
@@ -870,7 +951,7 @@ func (m *measurements) recordCancelled(call attempt) {
 	if call.scenario != "" {
 		m.scenarioLocked(call.scenario).cancelled++
 	}
-	m.recordTimelineLocked(time.Since(call.startedAt).Milliseconds(), timelineCancelled)
+	m.recordTimelineLocked(time.Since(call.scheduledAt).Milliseconds(), timelineCancelled)
 }
 
 func (m *measurements) recordTransportError(call attempt, message string) {
@@ -881,7 +962,7 @@ func (m *measurements) recordTransportError(call attempt, message string) {
 	if call.scenario != "" {
 		m.scenarioLocked(call.scenario).failures++
 	}
-	m.recordTimelineLocked(time.Since(call.startedAt).Milliseconds(), timelineFailure)
+	m.recordTimelineLocked(time.Since(call.scheduledAt).Milliseconds(), timelineFailure)
 }
 
 func (m *measurements) recordHTTPFailure(call attempt, latency int64, status int, message string) {
@@ -1015,6 +1096,7 @@ func (m *measurements) result(config core.RunConfig) core.RunResult {
 		TransportErrors: m.transportErrors, CompletionPercent: completionPercent,
 		SteadySeconds: int64(m.steadyAfter.Seconds()), SteadySamples: m.steadySamples, Scenarios: scenarios,
 		DrainedSeconds: m.drainedSeconds.Load(), Samples: samples,
+		GeneratorDelay: distribution(m.generatorDelays.values), LatencyFromIntendedArrival: config.Mode == core.LoadModeRPS,
 		MissingUsageResponses: m.missingUsage, ContentChunks: m.contentChunks, OutputLengthPinned: config.IgnoreEOS, ContextAccumulated: config.AccumulateContext, SamplesDecimated: samples != nil && samples.Decimated,
 	}
 }
@@ -1046,4 +1128,19 @@ func average(values []int64) int64 {
 }
 func percentile(sorted []int64, percentage int) int64 {
 	return sorted[(len(sorted)*percentage+99)/100-1]
+}
+
+// promptFiller builds roughly the requested number of tokens of filler. It is
+// approximate on purpose: shipping a tokenizer would mean keeping per-model vocab
+// files in sync with whatever the serving team deployed, a permanent drift bug.
+// The filler varies with the sequence so it cannot itself be prefix-cached.
+func promptFiller(sequence int64, tokens int) string {
+	chars := tokens * charsPerToken
+	var builder strings.Builder
+	builder.Grow(chars + 16)
+	_, _ = fmt.Fprintf(&builder, "[pad-%d] ", sequence)
+	for builder.Len() < chars {
+		builder.WriteString("context filler sentence for input length shaping. ")
+	}
+	return builder.String()[:chars]
 }

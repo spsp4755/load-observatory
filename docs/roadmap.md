@@ -213,3 +213,14 @@ TTFT 비교가능 : false
 `GET /api/runs/{id}/export.json`과 `export.csv`. 보고서 첨부용이므로 **숫자만이 아니라 판정과 provenance를 함께 담는다** — 그것이 없으면 읽는 사람이 숫자의 유효성을 판단할 수 없다.
 
 CSV는 `section,key,subkey,value`의 long format이다. 실행에는 스칼라·분포·초당 시계열·시나리오별 행이 섞여 있어 하나의 wide 헤더로 만들면 데이터를 잃거나 빈 열을 대량 만들어야 한다. 섹션: `run`, `provenance`, `lifecycle`, `throughput`, `steady_state`, `distribution`, `verdict`, `scenario`, `timeline`, `server_metrics`.
+
+## 도착 패턴과 길이 분포 (Phase 3 항목 15·16) ✅ 완료
+
+- **Poisson 도착.** RPS 모드에 `arrival_pattern: uniform | poisson`을 추가했다. 실제 호출자는 metronome처럼 오지 않는다. 실측: 12 RPS·in-flight 6·서비스 150ms에서 **균일 간격이면 드롭이 없는 조건인데 Poisson에서 3건 드롭**됐다 — 이 burstiness가 큐를, 그리고 TTFT 폭발을 드러내는 부분이다. 간격은 카운터 해시에서 유도해 **같은 설정이면 같은 도착 패턴**이 재현된다(실행 간 비교 가능성 유지).
+- **의도된 도착 시각부터 지연 측정 (coordinated omission 방지).** RPS 모드에서 지연을 «보내진 시점»이 아니라 «보내져야 했던 시점»부터 잰다. 그러지 않으면 5초 스톨이 10 rps에서 5초 샘플 1건만 남기고, 실제로는 5.0/4.9/4.8…초인 50건이 사라져 **p99가 자릿수 단위로 과소 보고**된다. steady-window 판정도 예정 시각 기준이라, 램프업에 예정된 요청이 늦게 나가도 측정 구간에 섞이지 않는다.
+- **`generator_delay` 분포를 별도 보고.** 예정 시각과 실제 발송 시각의 간격이다. 이 값이 크면 병목은 대상이 아니라 **부하 발생기**다. 현재 in-flight 상한 도달 시에는 큐잉하지 않고 드롭하므로(k6 패턴, `dropped_arrivals`로 계수) 이 값은 스케줄러 자체가 밀렸을 때만 올라간다.
+- **출력·입력 길이 분포.** `output_tokens_stdev`는 `max_tokens`를 요청마다 흔든다(서버가 `max_tokens`를 지키므로 **정확**). `prompt_pad_tokens`/`prompt_pad_stdev`는 프롬프트를 늘려 입력 길이 분포를 만드는데, 토크나이저를 반입하지 않으므로 문자 수 기준 **근사값이며 UI에도 그렇게 표기**한다. 두 값 모두 시퀀스 해시 기반이라 재현 가능하고, padding 텍스트도 시퀀스마다 달라 그 자체가 prefix 캐시되지 않는다.
+
+## 남은 항목
+
+**트레이스 리플레이 (항목 18)** 만 남았다. 사내 실제 트래픽을 캡처해 그대로 재생하는 기능으로, 합성 프롬프트 형태를 두고 논쟁하는 대신 실측 근거를 주므로 **사내 도구로서 신뢰도를 가장 크게 올릴 수 있는 항목**이다. 다만 캡처 포맷 정의·업로드 경로·보관 정책(프롬프트에 사내 정보가 포함됨)이 함께 필요하므로, 별도 설계가 선행돼야 한다.

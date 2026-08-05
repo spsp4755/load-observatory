@@ -59,6 +59,10 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   maxNumBatchedTokens: "0",
   tensorParallelSize: "0",
   accumulateContext: false,
+  arrivalPattern: "uniform",
+  outputTokensStdev: "0",
+  promptPadTokens: "0",
+  promptPadStdev: "0",
   tokensPerSecond: String(defaultTokensPerSecond),
   maxErrorPercent: "2",
   maxP95Millis: "2000",
@@ -595,6 +599,9 @@ function Details({ run, onCancel }) {
           <Metric label="오류율" value={rate(result.failures || 0, total)} />
           <Metric label="Goodput" value={result.goodput_percent == null ? "—" : `${result.goodput_percent.toFixed(1)}%`} />
           <Metric label="누락된 도착" value={result.dropped_arrivals ?? 0} />
+          {result.latency_from_intended_arrival && (
+            <Metric label="발생기 지연 P95" value={milliseconds(result.generator_delay?.p95_millis)} />
+          )}
           {result.agent_sessions > 0 && <><Metric label="에이전트 세션" value={result.agent_sessions} /><Metric label="세션 완료율" value={`${(result.completed_sessions / result.agent_sessions * 100).toFixed(1)}%`} /></>}
         </div>
       </section>
@@ -631,6 +638,19 @@ function Details({ run, onCancel }) {
         {result.latency_scope === "pooled_samples" && (
           <p className="muted">
             분산 실행의 percentile은 모든 샤드의 원시 표본을 합산해 한 번에 계산했습니다. 단일 프로세스 실행과 동일한 값입니다.
+          </p>
+        )}
+        {result.latency_from_intended_arrival && (
+          <p className="muted">
+            지연은 요청이 <b>보내진 시점이 아니라 보내져야 했던 시점</b>부터 측정했습니다. 그러지 않으면 발생기 안에서 대기한
+            시간이 꼬리에서 사라집니다(coordinated omission).
+            {result.generator_delay?.p95_millis > 100 && (
+              <>
+                {" "}
+                발생기 지연 P95가 {milliseconds(result.generator_delay.p95_millis)}입니다 — 이만큼은 대상이 아니라{" "}
+                <b>부하 발생기가 만든 지연</b>입니다. Agent Pod를 늘리세요.
+              </>
+            )}
           </p>
         )}
         {!result.output_length_pinned && result.issued > 0 && (
@@ -1258,6 +1278,19 @@ function TestSettings({
           <option value="rps">요청률 (RPS)</option>
         </select>
       </label>
+      {form.mode === "rps" && (
+        <label>
+          도착 패턴
+          <small>
+            실제 호출자는 일정 간격으로 오지 않습니다. Poisson은 평균 요청률은 같지만 간격이 불규칙해, TTFT가 폭발하는 큐 현상이
+            드러납니다.
+          </small>
+          <select name="arrivalPattern" value={form.arrivalPattern || "uniform"} onChange={update}>
+            <option value="uniform">균일 간격</option>
+            <option value="poisson">Poisson (불규칙)</option>
+          </select>
+        </label>
+      )}
       <label>
         {form.mode === "rps" ? "요청률" : "동시 사용자"}
         <input
@@ -1322,6 +1355,41 @@ function TestSettings({
           type="number"
           min="0"
           value={form.maxNumSeqs ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
+        출력 길이 편차 (± 토큰)
+        <small>요청마다 최대 출력 토큰을 이 범위 안에서 흔듭니다. 실제 트래픽은 응답 길이가 하나로 고정되지 않습니다.</small>
+        <input
+          name="outputTokensStdev"
+          type="number"
+          min="0"
+          value={form.outputTokensStdev ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
+        프롬프트 추가 길이 (토큰)
+        <small>
+          프롬프트를 이만큼 늘려 입력 길이 분포를 만듭니다. 토크나이저를 반입하지 않으므로 문자 수 기준 <b>근사값</b>입니다.
+        </small>
+        <input
+          name="promptPadTokens"
+          type="number"
+          min="0"
+          value={form.promptPadTokens ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
+        프롬프트 길이 편차 (± 토큰)
+        <small>추가 길이를 요청마다 이 범위 안에서 흔듭니다.</small>
+        <input
+          name="promptPadStdev"
+          type="number"
+          min="0"
+          value={form.promptPadStdev ?? "0"}
           onChange={update}
         />
       </label>
