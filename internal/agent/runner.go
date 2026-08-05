@@ -1015,7 +1015,7 @@ func (m *measurements) result(config core.RunConfig) core.RunResult {
 		TransportErrors: m.transportErrors, CompletionPercent: completionPercent,
 		SteadySeconds: int64(m.steadyAfter.Seconds()), SteadySamples: m.steadySamples, Scenarios: scenarios,
 		DrainedSeconds: m.drainedSeconds.Load(), Samples: samples,
-		MissingUsageResponses: m.missingUsage, ContentChunks: m.contentChunks, OutputLengthPinned: config.IgnoreEOS, ContextAccumulated: config.AccumulateContext,
+		MissingUsageResponses: m.missingUsage, ContentChunks: m.contentChunks, OutputLengthPinned: config.IgnoreEOS, ContextAccumulated: config.AccumulateContext, SamplesDecimated: samples != nil && samples.Decimated,
 	}
 }
 func p95(values []int64) int64 {

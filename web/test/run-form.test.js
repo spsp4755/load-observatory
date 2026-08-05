@@ -6,7 +6,7 @@ import { toSearchConfig } from "../src/run-form.js";
 test("toRunConfig converts VU form values to a controller payload", () => {
   assert.deepEqual(
     toRunConfig({ targetId: "target-1", mode: "vu", vus: "10", rps: "100", duration: "60", prompt: "write a Go API", maxTokens: "4096", maxErrorPercent: "2", maxP95Millis: "2000" }),
-    { target_id: "target-1", mode: "vu", vus: 10, duration_seconds: 60, prompt: "write a Go API", max_tokens: 4096, max_error_percent: 2, max_p95_millis: 2000, cache_policy: "mixed", variation_percent: 30, shards: 3, max_ttft_p95_millis: 0, min_output_tokens_per_second: 0, max_tpot_p95_millis: 0, min_goodput_percent: 0, max_in_flight: 0, warmup_requests: 0, cooldown_seconds: 0, drain_seconds: 0, steady_state_seconds: 0, min_completion_percent: 0, ignore_eos: false, max_num_seqs: 0, accumulate_context: false, stages: [], scenario: [], agent_workflow: false, journeys: [] },
+    { target_id: "target-1", mode: "vu", vus: 10, duration_seconds: 60, prompt: "write a Go API", max_tokens: 4096, max_error_percent: 2, max_p95_millis: 2000, cache_policy: "mixed", variation_percent: 30, shards: 3, max_ttft_p95_millis: 0, min_output_tokens_per_second: 0, max_tpot_p95_millis: 0, min_goodput_percent: 0, max_in_flight: 0, warmup_requests: 0, cooldown_seconds: 0, drain_seconds: 0, steady_state_seconds: 0, min_completion_percent: 0, ignore_eos: false, server: { max_num_seqs: 0, max_num_batched_tokens: 0, tensor_parallel_size: 0 }, accumulate_context: false, stages: [], scenario: [], agent_workflow: false, journeys: [] },
   );
 });
 

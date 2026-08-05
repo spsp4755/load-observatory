@@ -39,8 +39,13 @@ func (s *Server) sampleServerMetrics() {
 		}
 		// One scrape shared by every running run.
 		sample := s.monitor.Sample()
+		detected := s.monitor.ServerConfig()
 		for _, id := range active {
 			s.store.AddMonitoring(id, sample)
+			// Static for the run's lifetime, so the store keeps only the first.
+			if detected != (core.ServerConfig{}) {
+				s.store.SetDetectedServer(id, detected)
+			}
 		}
 	}
 }
@@ -81,6 +86,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.completeShard(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/progress"):
 		s.reportProgress(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/runs/") && (strings.HasSuffix(r.URL.Path, "/export.json") || strings.HasSuffix(r.URL.Path, "/export.csv")):
+		s.exportRun(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/runs/"):
 		s.getRun(w, r)
 	default:
@@ -401,14 +408,41 @@ type runView struct {
 	Saturation  core.SaturationVerdict  `json:"saturation"`
 	Validity    core.RunValidity        `json:"validity"`
 	Attribution core.LatencyAttribution `json:"attribution"`
+	Provenance  provenanceView          `json:"provenance"`
+}
+
+// provenanceView is the server configuration this run's numbers depend on, plus
+// what is still unknown about it. A capacity number without its provenance is an
+// anecdote: it cannot be compared with the next run's.
+type provenanceView struct {
+	Server core.ServerConfig `json:"server"`
+	// Gaps names the settings still unknown. Conflicts names the ones where the
+	// operator's entry disagrees with what the server reports.
+	Gaps      []string `json:"gaps,omitempty"`
+	Conflicts []string `json:"conflicts,omitempty"`
+	// TTFTComparable is false while any setting that changes the meaning of a TTFT
+	// number is unknown, chiefly max_num_batched_tokens under chunked prefill.
+	TTFTComparable bool `json:"ttft_comparable"`
 }
 
 func view(run core.Run) runView {
+	effective := core.EffectiveServerConfig(run.Config.Server, run.DetectedServer)
+	gaps, ttftComparable := core.ProvenanceGaps(effective)
+	// The saturation verdict must reason from the effective configuration, not
+	// from a stale value the operator typed.
+	config := run.Config
+	config.Server = effective
 	return runView{
 		Run:         run,
-		Saturation:  core.AssessSaturation(run.Monitoring, run.Config),
-		Validity:    core.AssessRunValidity(run.Monitoring, run.Result, run.Config),
+		Saturation:  core.AssessSaturation(run.Monitoring, config),
+		Validity:    core.AssessRunValidity(run.Monitoring, run.Result, config),
 		Attribution: core.AttributeTTFT(run.Result, run.Monitoring),
+		Provenance: provenanceView{
+			Server:         effective,
+			Gaps:           gaps,
+			Conflicts:      core.ProvenanceConflicts(run.Config.Server, run.DetectedServer),
+			TTFTComparable: ttftComparable,
+		},
 	}
 }
 

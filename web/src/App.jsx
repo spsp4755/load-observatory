@@ -25,8 +25,10 @@ import {
   metricMean,
   metricPeak,
   milliseconds,
+  provenanceDifferences,
   rate,
   summarizeMonitoring,
+  workloadDifferences,
 } from "./results.js";
 import { recommendWorkload } from "./workload-profiles.js";
 import { operationalSummary } from "./operational-summary.js";
@@ -54,6 +56,8 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   minCompletionPercent: "95",
   ignoreEOS: false,
   maxNumSeqs: "0",
+  maxNumBatchedTokens: "0",
+  tensorParallelSize: "0",
   accumulateContext: false,
   tokensPerSecond: String(defaultTokensPerSecond),
   maxErrorPercent: "2",
@@ -316,6 +320,59 @@ function SweepCurve({ search, form }) {
   );
 }
 
+// Provenance records the server settings the numbers depend on. Without them a
+// capacity report is an anecdote: it cannot be compared with the next run's.
+function Provenance({ run }) {
+  const provenance = run.provenance;
+  if (!provenance) return null;
+  const server = provenance.server || {};
+  const rows = [
+    ["vLLM 버전", server.version],
+    ["모델", server.model],
+    ["max_num_seqs", server.max_num_seqs],
+    ["max_num_batched_tokens", server.max_num_batched_tokens],
+    ["gpu_memory_utilization", server.gpu_memory_utilization],
+    ["block_size", server.block_size],
+    ["tensor_parallel_size", server.tensor_parallel_size],
+    ["prefix caching", server.prefix_caching],
+    ["chunked prefill", server.chunked_prefill],
+  ];
+  return (
+    <section className="panel">
+      <h3>측정 조건 (provenance)</h3>
+      <p className="muted">
+        용량 수치는 이 설정 아래에서만 유효합니다. 설정이 다른 실행끼리는 비교할 수 없습니다.
+      </p>
+      {!provenance.ttft_comparable && (
+        <p className="warn-line">
+          TTFT를 다른 실행과 비교할 수 없습니다. chunked prefill이 기본 활성이라 TTFT는 프롬프트 길이가 아니라{" "}
+          <code>max_num_batched_tokens</code>의 함수인데, 이 값(또는 prefix caching·chunked prefill 여부)이 확인되지
+          않았습니다.
+        </p>
+      )}
+      {(provenance.conflicts || []).length > 0 && (
+        <p className="warn-line">
+          입력한 설정과 서버가 보고한 설정이 다릅니다. 서버 보고값을 사용했습니다:
+          <br />
+          {provenance.conflicts.join(" · ")}
+        </p>
+      )}
+      <div className="scroll-x">
+        <table>
+          <tbody>
+            {rows.map(([label, value]) => (
+              <tr key={label}>
+                <td>{label}</td>
+                <td>{value ? String(value) : <span className="muted">미확인</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function Details({ run, onCancel }) {
   if (!run)
     return (
@@ -375,6 +432,16 @@ function Details({ run, onCancel }) {
           <button className="danger" onClick={() => onCancel(run.id)}>
             실행 중지
           </button>
+        )}
+        {run.status === "completed" && (
+          <span className="export-links">
+            <a className="small" href={`/api/runs/${run.id}/export.json`} download>
+              JSON 내보내기
+            </a>
+            <a className="small" href={`/api/runs/${run.id}/export.csv`} download>
+              CSV 내보내기
+            </a>
+          </span>
         )}
       </section>
       {run.validity && run.validity.trustworthy === false && (
@@ -540,6 +607,12 @@ function Details({ run, onCancel }) {
               ? ` (${formatSeconds(result.steady_state_seconds)} 이후)`
               : ""}
             의 성공 요청 {result.steady_state_samples}건만으로 계산했습니다.
+            {result.samples_decimated && (
+              <>
+                {" "}
+                표본이 상한에 도달해 균일하게 솎아냈으므로, percentile은 추정값입니다.
+              </>
+            )}
           </p>
         ) : (
           result.issued > 0 && (
@@ -660,6 +733,7 @@ function Details({ run, onCancel }) {
           </table>
         </section>
       )}
+      <Provenance run={run} />
       <ServerState monitoring={monitoring} />
       <section className="panel">
         <h3>인프라 모니터링</h3>
@@ -1252,6 +1326,31 @@ function TestSettings({
         />
       </label>
       <label>
+        서버 max_num_batched_tokens (선택)
+        <small>
+          단계당 토큰 예산입니다. chunked prefill이 기본 활성이라 TTFT는 프롬프트 길이가 아니라 이 예산의 함수입니다.{" "}
+          <b>입력하지 않으면 TTFT를 다른 실행과 비교할 수 없습니다.</b>
+        </small>
+        <input
+          name="maxNumBatchedTokens"
+          type="number"
+          min="0"
+          value={form.maxNumBatchedTokens ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
+        서버 tensor_parallel_size (선택)
+        <small>TP 차수입니다. 실행 간 비교 근거로 기록합니다.</small>
+        <input
+          name="tensorParallelSize"
+          type="number"
+          min="0"
+          value={form.tensorParallelSize ?? "0"}
+          onChange={update}
+        />
+      </label>
+      <label>
         예상 생성 속도 (tok/s)
         <small>실행 시간이 충분한지 계산하는 데만 씁니다. 실제 측정값으로 보정하세요.</small>
         <input
@@ -1471,6 +1570,33 @@ function Records({ runs, choose }) {
   );
 }
 
+// ComparabilityWarning refuses to let a delta between two runs read as meaningful
+// when they were not measured under the same conditions.
+function ComparabilityWarning({ left, right }) {
+  const server = provenanceDifferences(left, right);
+  const workload = workloadDifferences(left, right);
+  if (!server.length && !workload.length) {
+    return <p className="muted">두 실행의 서버 설정과 워크로드 조건이 같습니다. 아래 차이는 부하 차이로 해석할 수 있습니다.</p>;
+  }
+  return (
+    <p className="warn-line">
+      <b>두 실행의 측정 조건이 다릅니다.</b> 아래 차이를 부하 차이로 해석하면 안 됩니다.
+      {workload.length > 0 && (
+        <>
+          <br />
+          워크로드: {workload.join(" · ")}
+        </>
+      )}
+      {server.length > 0 && (
+        <>
+          <br />
+          서버 설정: {server.join(" · ")}
+        </>
+      )}
+    </p>
+  );
+}
+
 function Comparison({ runs }) {
   const completed = runs.filter((item) => item.status === "completed");
   const [leftID, setLeftID] = useState("");
@@ -1522,6 +1648,7 @@ function Comparison({ runs }) {
               </select>
             </label>
           </div>
+          {left && right && <ComparabilityWarning left={left} right={right} />}
           {left && right && (
             <table>
               <thead>

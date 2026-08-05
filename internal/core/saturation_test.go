@@ -59,7 +59,7 @@ func TestQueueingAtMaxNumSeqsIsConfigLimited(t *testing.T) {
 		MetricRequestsRunning: 16,
 		MetricKVCacheUsage:    0.4,
 		MetricPreemptionRate:  0,
-	}), RunConfig{MaxNumSeqs: 16})
+	}), RunConfig{Server: ServerConfig{MaxNumSeqs: 16}})
 	if verdict.State != SaturationConfigLimited {
 		t.Fatalf("queueing at max_num_seqs was called %q", verdict.State)
 	}

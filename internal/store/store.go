@@ -25,6 +25,7 @@ type Store interface {
 	SetShardProgress(string, core.RunProgress) bool
 	AddMonitoring(string, core.MonitoringSample)
 	ActiveRunIDs() []string
+	SetDetectedServer(string, core.ServerConfig)
 	TouchAgent()
 	Health() (int, int, bool)
 	CreateSearch(core.AutoSearchConfig) core.AutoSearch
@@ -483,6 +484,9 @@ func (s *MemoryStore) CompleteShard(id string, result core.RunResult) (core.Run,
 		merged.ContentChunks += value.ContentChunks
 		merged.OutputLengthPinned = value.OutputLengthPinned
 		merged.ContextAccumulated = value.ContextAccumulated
+		if value.SamplesDecimated {
+			merged.SamplesDecimated = true
+		}
 		if value.Samples != nil {
 			pooledAny = true
 			appendSamples(pooled, value.Samples)
@@ -718,6 +722,19 @@ func (s *MemoryStore) AddMonitoring(id string, sample core.MonitoringSample) {
 		sample.AtSecond = time.Now().Unix() - run.StartedUnix
 	}
 	run.Monitoring = append(run.Monitoring, sample)
+	s.runs[id] = run
+}
+
+// SetDetectedServer records the configuration scraped from the model server.
+// Recorded once per run: it is static for the run's lifetime.
+func (s *MemoryStore) SetDetectedServer(id string, detected core.ServerConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok || run.DetectedServer != (core.ServerConfig{}) {
+		return
+	}
+	run.DetectedServer = detected
 	s.runs[id] = run
 }
 

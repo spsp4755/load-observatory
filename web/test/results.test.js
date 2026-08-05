@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getVerdict, gpuBoundLabel, hasMetric, metricKeys, metricMean, metricPeak, summarizeMonitoring } from "../src/results.js";
+import { getVerdict, gpuBoundLabel, hasMetric, metricKeys, metricMean, metricPeak, provenanceDifferences, summarizeMonitoring, workloadDifferences } from "../src/results.js";
 
 test("getVerdict recommends the configured load when a completed run is stable", () => {
   const verdict = getVerdict({ status: "completed", config: { mode: "vu", vus: 10, max_error_percent: 2, max_p95_millis: 2000 }, result: { total: 100, failures: 1, latency: { p95_millis: 250 } } });
@@ -58,4 +58,46 @@ test("summarizeMonitoring preserves an unavailable reason", () => {
   const summary = summarizeMonitoring([{ status: "unavailable", message: "Prometheus URL not configured" }]);
   assert.equal(summary.available, false);
   assert.match(summary.message, /Prometheus/);
+});
+
+// Two capacity numbers measured under different server settings are not
+// comparable, and the UI has to say that rather than show a meaningless delta.
+test("provenanceDifferences names the settings that changed between runs", () => {
+  const left = { provenance: { server: { model: "qwen", max_num_seqs: 256, max_num_batched_tokens: 8192 } } };
+  const right = { provenance: { server: { model: "qwen", max_num_seqs: 256, max_num_batched_tokens: 2048 } } };
+  const differences = provenanceDifferences(left, right);
+  assert.equal(differences.length, 1);
+  assert.match(differences[0], /max_num_batched_tokens/);
+  assert.match(differences[0], /8192/);
+  assert.match(differences[0], /2048/);
+});
+
+test("provenanceDifferences is empty for identical conditions", () => {
+  const run = { provenance: { server: { model: "qwen", max_num_seqs: 256 } } };
+  assert.deepEqual(provenanceDifferences(run, structuredClone(run)), []);
+});
+
+// A setting known on one side and unknown on the other is still not comparable.
+test("provenanceDifferences flags a setting known on only one side", () => {
+  const known = { provenance: { server: { max_num_batched_tokens: 8192 } } };
+  const unknown = { provenance: { server: {} } };
+  const differences = provenanceDifferences(known, unknown);
+  assert.equal(differences.length, 1);
+  assert.match(differences[0], /미확인/);
+});
+
+// Comparing a cache-bypass run with a cache-reuse run compares two different
+// questions, not two load levels.
+test("workloadDifferences catches a changed cache policy or pinning", () => {
+  const left = { config: { cache_policy: "bypass", max_tokens: 4096 }, result: { output_length_pinned: true, context_accumulated: false } };
+  const right = { config: { cache_policy: "reuse", max_tokens: 4096 }, result: { output_length_pinned: false, context_accumulated: false } };
+  const differences = workloadDifferences(left, right);
+  assert.equal(differences.length, 2);
+  assert.ok(differences.some((d) => d.includes("캐시 정책")));
+  assert.ok(differences.some((d) => d.includes("출력 길이 고정")));
+});
+
+test("workloadDifferences is empty for the same workload", () => {
+  const run = { config: { cache_policy: "bypass", max_tokens: 4096 }, result: { output_length_pinned: true, context_accumulated: true } };
+  assert.deepEqual(workloadDifferences(run, structuredClone(run)), []);
 });

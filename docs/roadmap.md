@@ -81,7 +81,7 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
 
 </details>
 
-**남은 Phase 0 후속 과제**: `sampleSet`이 decimate된 실행은 percentile이 추정값이므로, UI에 그 사실을 표시해야 한다(현재 `Decimated` 플래그는 수집만 하고 화면에 쓰지 않는다).
+**Phase 0 후속 과제 완료**: decimate된 실행은 「지연 분석」에 percentile이 추정값임을 표시한다.
 
 ### Phase 1 — 판정을 신뢰할 수 있게 ✅ 완료
 
@@ -129,7 +129,7 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
 
 </details>
 
-**남은 Phase 1 후속 과제**: provenance(항목 10) 중 `max_num_seqs`만 입력받는다. `max_num_batched_tokens`·`gpu_memory_utilization`·`block_size`·TP 차수·APC on/off는 아직 기록하지 않으므로, 실행 간 비교의 근거가 완전하지 않다. `vllm:cache_config_info` 라벨에서 자동 수집하는 것을 우선 검토한다.
+**항목 10(provenance)은 아래 별도 절에서 완료했다.**
 
 ### Phase 2 — 용량 판정 방법론 ✅ 완료 (11·12·13)
 
@@ -151,7 +151,7 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
 - **Goodput 분모 교정** (항목 12): `good / (성공 + 오류)`. 기존에는 성공만 분모여서, **부하가 걸리면 어려운 요청을 흘려버리는 서버가 오히려 높은 점수**를 받았다. 취소는 분모에서 제외한다 — 그건 완료율 게이트가 따로 본다.
 - **멀티턴 컨텍스트 누적** (항목 13): 각 턴의 실제 답변 텍스트를 다음 요청에 함께 보낸다. 시나리오별 `input_tokens`로 컨텍스트 증가가 결과에 보인다. 누적 이력은 상한을 두고 오래된 턴부터 버린다. 기본은 꺼짐 — 켜면 측정 대상이 달라진다.
 
-**남은 Phase 2 과제**: 항목 14(chunked prefill 인지). `max_num_batched_tokens`를 기록하지 않으므로 **TTFT 숫자는 여전히 실행 간 비교 근거가 부족하다.** Phase 1의 provenance 후속 과제와 같은 항목이다.
+**항목 14(chunked prefill 인지)는 provenance 작업에서 해결했다.** 아래 참조.
 
 ### Phase 2 — 원래 계획
 
@@ -188,3 +188,28 @@ vLLM은 **v0.6.0부터 automatic prefix caching(APC)이 기본 활성**이다. �
 - `vllm:num_requests_waiting_by_reason`의 전체 label 집합 (`capacity`만 확인) — 존재 여부부터 탐침한다.
 - GuideLLM `benchmarks.json`의 정확한 키 이름 (버전 간 CLI/스키마 변동 큼) — 임포터를 만들 경우 고정한 버전의 실제 출력으로 확인한다.
 - inference-perf가 어떤 데이터셋을 실제로 로컬에 포함하는지 (README 주장, 소스 미확인).
+
+## Provenance (Phase 1 항목 10 · Phase 2 항목 14) ✅ 완료
+
+두 Phase에서 연속으로 남겼던 항목. **`max_num_batched_tokens`를 모르면 TTFT는 실행 간 비교 근거가 없다** — chunked prefill이 기본 활성이라 TTFT는 프롬프트 길이가 아니라 이 예산의 함수이기 때문이다.
+
+가짜 Prometheus가 `vllm:cache_config_info` 라벨을 내보내게 하고 실측 확인:
+
+```
+서버에서 탐지 : {"model":"qwen/qwen3-35b","gpu_memory_utilization":0.9,"block_size":16,
+                "prefix_caching":"on","chunked_prefill":"on"}
+실효 설정     : 위 + 운영자 입력 {max_num_seqs:16, tensor_parallel_size:2}
+TTFT 비교가능 : false
+미확인 항목   : vLLM 버전, max_num_batched_tokens
+```
+
+- **서버 라벨에서 자동 수집.** `vllm:cache_config_info`와 큐 지표의 `model_name` 라벨을 읽는다. 라벨 이름은 버전마다 다르므로, 파싱 불가·부재는 **추측하지 않고 「미확인」으로 남긴다**. Python식 `"True"/"False"`는 `on`/`off`로 정규화한다.
+- **서버 보고값이 운영자 입력을 이긴다.** 서버는 자기 설정의 권위다. 다만 두 값이 **다르면 충돌로 표시**한다 — 운영자가 틀린 `max_num_seqs`로 추론하면 "하드웨어 한계 vs 설정 한계" 판정 자체가 틀린다.
+- **`ttft_comparable` 플래그.** TTFT의 의미를 바꾸는 설정(`max_num_batched_tokens`, prefix caching, chunked prefill) 중 하나라도 미확인이면 false. 화면에 그 이유를 그대로 띄운다.
+- **실행 비교 게이팅.** 서버 설정이나 워크로드 조건(캐시 정책, 출력 길이 고정, 이력 누적, 최대 토큰)이 다른 두 실행을 비교하면, **차이를 부하 차이로 해석하지 말라고 경고**하고 무엇이 달랐는지 나열한다. 예: `캐시 정책: bypass ↔ reuse · 출력 길이 고정: false ↔ true · max_num_batched_tokens: 미확인 ↔ 8192`.
+
+## 결과 내보내기 (Phase 3 항목 17) ✅ 완료
+
+`GET /api/runs/{id}/export.json`과 `export.csv`. 보고서 첨부용이므로 **숫자만이 아니라 판정과 provenance를 함께 담는다** — 그것이 없으면 읽는 사람이 숫자의 유효성을 판단할 수 없다.
+
+CSV는 `section,key,subkey,value`의 long format이다. 실행에는 스칼라·분포·초당 시계열·시나리오별 행이 섞여 있어 하나의 wide 헤더로 만들면 데이터를 잃거나 빈 열을 대량 만들어야 한다. 섹션: `run`, `provenance`, `lifecycle`, `throughput`, `steady_state`, `distribution`, `verdict`, `scenario`, `timeline`, `server_metrics`.

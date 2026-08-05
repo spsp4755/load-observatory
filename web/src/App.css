@@ -51,3 +51,6 @@ td.cell-at-risk { color:#ffb4a8; font-weight:700; }
 .checkbox-field input[type="checkbox"] { width:20px; height:20px; min-width:20px; margin-top:2px; cursor:pointer; }
 .warn-line code, .config-summary code, label code { padding:1px 5px; border-radius:4px; background:#0b171d; color:#8fc6ee; font-size:12px; }
 @media (max-width: 760px) { .summary, .filters, .workflow-grid, .workload-plan { grid-template-columns: 1fr; }.duration-advice { flex-direction:column; align-items:flex-start; }.preset-row, .scenario-row { flex-wrap: wrap; }.workflow-grid .workflow-choice, .workflow-choice.mixed { min-height:auto; flex-direction:column; align-items:flex-start; }.workflow-grid .workflow-choice button, .workflow-choice.mixed button { align-self:auto; }.operational-decision { flex-direction:column; }.decision-cause { white-space:normal; }.scenario-columns { display:none; }.scenario-task { display:flex; }.scenario-task input, .scenario-task input:nth-child(2) { width:100%; }.scenario-task .danger { width:auto; } }
+.export-links { display:flex; gap:8px; align-self:flex-start; }
+.export-links a { padding:8px 12px; border:1px solid #2a3e49; border-radius:6px; background:#101f27; color:#8fc6ee; font-size:12px; text-decoration:none; white-space:nowrap; }
+.export-links a:hover { background:#16303c; }

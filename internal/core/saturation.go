@@ -60,9 +60,9 @@ func AssessSaturation(samples []MonitoringSample, config RunConfig) SaturationVe
 		verdict.State = SaturationSaturated
 		verdict.Headline = fmt.Sprintf("서버가 포화했습니다. 대기 요청이 측정 구간의 %.0f%%에서 발생하고 preemption이 초당 %.2f건 일어났습니다.", waiting.fractionActive()*100, preemptions.mean())
 		verdict.Detail = "preemption은 KV 캐시가 부족해 이미 진행한 작업을 버리고 다시 계산한다는 뜻입니다. 이 부하는 운영 한계를 넘었습니다."
-	case sustainedQueue && config.MaxNumSeqs > 0 && running.peak >= float64(config.MaxNumSeqs):
+	case sustainedQueue && config.Server.MaxNumSeqs > 0 && running.peak >= float64(config.Server.MaxNumSeqs):
 		verdict.State = SaturationConfigLimited
-		verdict.Headline = fmt.Sprintf("설정 한계입니다. 동시 실행이 max_num_seqs(%d)에 도달한 상태로 요청이 대기했습니다.", config.MaxNumSeqs)
+		verdict.Headline = fmt.Sprintf("설정 한계입니다. 동시 실행이 max_num_seqs(%d)에 도달한 상태로 요청이 대기했습니다.", config.Server.MaxNumSeqs)
 		verdict.Detail = "하드웨어가 아니라 서버 설정이 상한입니다. GPU 증설이 아니라 max_num_seqs 조정이 먼저입니다."
 	case sustainedQueue:
 		verdict.State = SaturationConfigLimited

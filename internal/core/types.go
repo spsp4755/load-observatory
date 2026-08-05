@@ -71,10 +71,9 @@ type RunConfig struct {
 	// comparable between runs. It is a vLLM/SGLang extension, so it is opt-in:
 	// a server that rejects unknown fields would fail every request.
 	IgnoreEOS bool `json:"ignore_eos,omitempty"`
-	// MaxNumSeqs is the server's configured concurrency ceiling, entered by the
-	// operator. When execution pins to it while requests queue, the limit is the
-	// configuration rather than the hardware.
-	MaxNumSeqs int `json:"max_num_seqs,omitempty"`
+	// Server is the model server's configuration as the operator knows it.
+	// Capacity numbers are only comparable between runs that shared it.
+	Server ServerConfig `json:"server,omitempty"`
 	// AccumulateContext carries each turn's answer into the next request, the way
 	// a real chat or agent session does. The prompt then grows every turn, which
 	// is the dominant driver of real KV cache pressure and of TTFT growth. Off by
@@ -231,7 +230,10 @@ type RunResult struct {
 	MissingUsageResponses int64 `json:"missing_usage_responses,omitempty"`
 	ContentChunks         int64 `json:"content_chunks,omitempty"`
 	OutputLengthPinned    bool  `json:"output_length_pinned"`
-	ContextAccumulated    bool  `json:"context_accumulated"`
+	// SamplesDecimated means the sample cap was reached and the retained set was
+	// thinned uniformly, so the percentiles are estimates rather than exact.
+	SamplesDecimated   bool `json:"samples_decimated,omitempty"`
+	ContextAccumulated bool `json:"context_accumulated"`
 }
 
 // MonitoringSample is one second of server-side state. Metrics is a map rather
@@ -297,6 +299,9 @@ type Run struct {
 	// StartedUnix is when the run began executing, used to align the server-side
 	// samples with the client-side timeline.
 	StartedUnix int64 `json:"started_unix,omitempty"`
+	// DetectedServer is the configuration scraped from the model server itself,
+	// kept separate from what the operator entered so a contradiction is visible.
+	DetectedServer ServerConfig `json:"detected_server,omitempty"`
 }
 
 type AutoSearchStatus string

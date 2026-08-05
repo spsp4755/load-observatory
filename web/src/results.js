@@ -47,6 +47,46 @@ export function getVerdict(run) {
 export const rate = (part, total) => total ? `${(part / total * 100).toFixed(1)}%` : "—";
 export const milliseconds = (value) => value == null ? "—" : `${value} ms`;
 
+const provenanceFields = [
+  ["vLLM 버전", "version"],
+  ["모델", "model"],
+  ["max_num_seqs", "max_num_seqs"],
+  ["max_num_batched_tokens", "max_num_batched_tokens"],
+  ["gpu_memory_utilization", "gpu_memory_utilization"],
+  ["block_size", "block_size"],
+  ["tensor_parallel_size", "tensor_parallel_size"],
+  ["prefix caching", "prefix_caching"],
+  ["chunked prefill", "chunked_prefill"],
+];
+
+// provenanceDifferences lists the server settings that differ between two runs.
+// Two capacity numbers measured under different settings are not comparable, so
+// the UI must say that rather than show a delta that looks meaningful.
+export function provenanceDifferences(left, right) {
+  const a = left?.provenance?.server || {};
+  const b = right?.provenance?.server || {};
+  const show = (value) => (value === undefined || value === null || value === "" || value === 0 ? "미확인" : String(value));
+  return provenanceFields
+    .filter(([, key]) => show(a[key]) !== show(b[key]))
+    .map(([label, key]) => `${label}: ${show(a[key])} ↔ ${show(b[key])}`);
+}
+
+// Comparing a cache-bypass run with a cache-reuse run compares two different
+// questions, so that difference is called out separately from server settings.
+export function workloadDifferences(left, right) {
+  const differences = [];
+  const pairs = [
+    ["캐시 정책", left?.config?.cache_policy, right?.config?.cache_policy],
+    ["출력 길이 고정", left?.result?.output_length_pinned, right?.result?.output_length_pinned],
+    ["대화 이력 누적", left?.result?.context_accumulated, right?.result?.context_accumulated],
+    ["최대 출력 토큰", left?.config?.max_tokens, right?.config?.max_tokens],
+  ];
+  for (const [label, a, b] of pairs) {
+    if (String(a) !== String(b)) differences.push(`${label}: ${a} ↔ ${b}`);
+  }
+  return differences;
+}
+
 // Metric keys shared with the Go side.
 export const metricKeys = {
   requestsRunning: "requests_running",

@@ -180,6 +180,52 @@ func (c Client) resolve(query metricQuery) (float64, string, bool) {
 	return 0, "", false
 }
 
+// configMetrics are the metrics whose LABELS carry the server's configuration.
+// vLLM publishes its cache config this way; other engines may not publish it at
+// all, which is why the result is treated as "unknown" rather than defaulted.
+var configMetrics = []string{
+	"vllm:cache_config_info",
+	"vllm:num_requests_running",
+	"sglang:num_running_reqs",
+	"sglang_num_running_reqs",
+}
+
+// ServerConfig scrapes the server's own configuration from metric labels. It is
+// the authority on its own settings, so this outranks what the operator typed.
+func (c Client) ServerConfig() core.ServerConfig {
+	if c.url == "" {
+		return core.ServerConfig{}
+	}
+	merged := core.ServerConfig{}
+	for _, metric := range configMetrics {
+		labels, err := c.queryLabels(metric)
+		if err != nil {
+			continue
+		}
+		merged = core.EffectiveServerConfig(merged, core.ServerConfigFromLabels(labels))
+	}
+	return merged
+}
+
+func (c Client) queryLabels(expression string) (map[string]string, error) {
+	response, err := c.http.Get(c.url + "/api/v1/query?query=" + url.QueryEscape(expression))
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	var payload struct {
+		Data struct {
+			Result []struct {
+				Metric map[string]string `json:"metric"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(response.Body).Decode(&payload) != nil || len(payload.Data.Result) == 0 {
+		return nil, fmt.Errorf("metric unavailable")
+	}
+	return payload.Data.Result[0].Metric, nil
+}
+
 func (c Client) query(expression string) (float64, error) {
 	response, err := c.http.Get(c.url + "/api/v1/query?query=" + url.QueryEscape(expression))
 	if err != nil {

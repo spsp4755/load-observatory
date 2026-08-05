@@ -114,6 +114,10 @@ func (s *PostgresStore) AddMonitoring(id string, sample core.MonitoringSample) {
 	s.memory.AddMonitoring(id, sample)
 }
 func (s *PostgresStore) ActiveRunIDs() []string { return s.memory.ActiveRunIDs() }
+func (s *PostgresStore) SetDetectedServer(id string, detected core.ServerConfig) {
+	s.memory.SetDetectedServer(id, detected)
+	s.persist()
+}
 func (s *PostgresStore) TouchAgent()              { s.memory.TouchAgent() }
 func (s *PostgresStore) Health() (int, int, bool) { return s.memory.Health() }
 func (s *PostgresStore) CreateSearch(v core.AutoSearchConfig) core.AutoSearch {
