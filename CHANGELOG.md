@@ -1,0 +1,26 @@
+# Changelog
+
+## v0.2.0
+
+측정 신뢰성 고도화. "부하를 걸었다"에서 "안정 용량을 증명했다"로.
+
+- 요청 시작·완료·시간 종료 취소·HTTP 실패·전송 오류를 분리 집계 (`Issued/Completed/Cancelled/HTTPFailures/TransportErrors`)
+- 매 초 목표 부하·활성 요청·대기열·완료 RPS 실시간 표시 (`LiveProgress`)
+- 종료 시 즉시 취소 대신 `drain_seconds` 유예 시간 제공 (진행 중인 요청은 완료까지 대기)
+- 완료율이 `min_completion_percent` 미달이면 경고로 표시하고 안정 용량으로 판정하지 않음
+- 워밍업 이후 `steady_state_seconds` 구간만 P50/P95/TTFT/TPOT 집계
+- 시나리오별 완료율·지연시간·토큰 처리량 분리 (`ScenarioResult`)
+- Poisson 도착 패턴 + 예정 도착 시각 기준 지연 측정 (coordinated omission 방지)
+- 출력 토큰·프롬프트 길이 분포 (평균 근처 지터, 고정값 아님)
+- 용량 곡선 스윕 (`AdvanceSearch`) — 이분 탐색 대신 부하 사다리를 걸어 완주 지점을 찾음
+- 서버 측 지표로 지연 원인 귀속 (`server_bound`/`client_bound`/`mismatch`)
+- Provenance 수집·비교 — 실행 간 `max_num_batched_tokens`, 캐시 정책, 출력 길이 고정 여부가 다르면 비교 불가 경고
+- JSON/CSV 내보내기 (판정·provenance 포함, long-format CSV)
+
+## v0.1.1 and earlier
+
+사용자 여정, 워크로드 가이드, 실행 가시성 개선. 상세 내역은 `git log v0.1.0..v0.1.1`.
+
+## v0.1.0
+
+폐쇄망 부하 측정 MVP. PostgreSQL 기반 분산 에이전트, API 키 저장 시 암호화, Kubernetes 오프라인 배포.
