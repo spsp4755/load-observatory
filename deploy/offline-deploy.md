@@ -42,7 +42,7 @@ Secret 생성이 실패하면서 이미 존재한다고 나오면, 기존 Secret
 
 `OIDC_ISSUER_URL`을 비워두면(기본값) 로그인 없이 기존처럼 동작합니다. Keycloak 로그인을 켜려면:
 
-1. Keycloak에서 **confidential** 클라이언트를 만듭니다. Redirect URI는 `k8s.yaml`의 `OIDC_REDIRECT_URL`과 정확히 일치해야 합니다 (예: `https://load-observatory.internal/auth/callback`).
+1. Keycloak에서 **confidential** 클라이언트를 만듭니다. Redirect URI는 `k8s.yaml`의 `OIDC_REDIRECT_URL`과 정확히 일치해야 합니다 (기본값: `https://load-observatory.kubagents-ofc.koreacb.com/auth/callback`).
 2. 클라이언트 시크릿과 세션 서명용 랜덤 문자열(32바이트 이상)을 준비합니다.
 
 ```powershell
@@ -59,7 +59,25 @@ $sessionSecret = [Convert]::ToBase64String($sessionKey)
 5. 로그인한 사용자 정보는 서명된 쿠키(`lo_session`, HttpOnly)로만 유지됩니다 — 서버 쪽 세션 저장소가 없으므로 컨트롤러를 여러 replica로 늘려도 세션이 깨지지 않습니다.
 6. `/api/agent/*`(에이전트가 부르는 내부 API)와 `/api/health`는 로그인을 켜도 그대로 열려 있습니다 — 에이전트는 브라우저가 아니라 로그인 리다이렉트를 탈 수 없기 때문입니다. 이 경로는 네트워크 수준에서 신뢰(클러스터 내부에서만 도달 가능)해야 합니다.
 
-## 3. 이미지 주소 렌더링 및 배포
+## 3. 외부 접속 (Traefik Ingress)
+
+`k8s.yaml`에 `web` Service를 위한 표준 `networking.k8s.io/v1 Ingress`(`ingressClassName: traefik`)가 이미 포함돼 있습니다. Traefik 전용 CRD(`IngressRoute`)가 아니라 표준 Ingress라서, Traefik이 Kubernetes Ingress provider로 떠 있는 일반적인 구성이면 그대로 동작합니다.
+
+기본 호스트는 `load-observatory.kubagents-ofc.koreacb.com`입니다. 다른 호스트를 쓰려면 `k8s.yaml`에서 **세 곳**을 함께 바꿔야 합니다 — 하나만 바꾸면 로그인 리다이렉트가 깨집니다:
+
+1. `Ingress`의 `spec.tls[0].hosts`와 `spec.rules[0].host`
+2. `controller` Deployment의 `OIDC_REDIRECT_URL`
+3. Keycloak 클라이언트의 Redirect URI (2번 값과 동일하게)
+
+TLS는 사내 PKI로 발급한 인증서를 Secret으로 반입해서 씁니다(`cert-manager`가 이미 있으면 그걸로 대체 가능):
+
+```powershell
+kubectl -n load-observatory create secret tls load-observatory-tls --cert=load-observatory.crt --key=load-observatory.key
+```
+
+그리고 `load-observatory.kubagents-ofc.koreacb.com`이 실제로 이 클러스터의 Traefik 진입점(LoadBalancer/NodePort IP)을 가리키도록 사내 DNS에 등록합니다.
+
+## 4. 이미지 주소 렌더링 및 배포
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy\render-offline-manifest.ps1 -Registry registry.internal:5000 -Version v0.1.0 -OutputPath .\k8s-offline.yaml
@@ -71,7 +89,7 @@ kubectl -n load-observatory rollout status deployment/web
 
 렌더링 스크립트는 예시 `postgres-credentials` Secret 문서를 자동 제거합니다. 클러스터에 NVIDIA GPU가 없는 노드에는 `dcgm-exporter`가 정상 기동하지 않을 수 있으므로 GPU 노드 셀렉터 또는 toleration을 운영 환경에 맞게 추가합니다.
 
-## 4. 반입 후 폐쇄망에서 직접 수정해야 하는 지점
+## 5. 반입 후 폐쇄망에서 직접 수정해야 하는 지점
 
 기본 매니페스트(`k8s.yaml`)는 예시 값입니다. 아래는 코드를 고치는 게 아니라, 배포 시점에 환경에 맞게 값만 바꿔주면 되는 지점입니다.
 
