@@ -272,6 +272,13 @@ type RunResult struct {
 	// one stall records a single slow sample instead of every request that should
 	// have been sent during it.
 	LatencyFromIntendedArrival bool `json:"latency_from_intended_arrival,omitempty"`
+	// BackoffEvents/BackoffSeconds are the circuit breaker's activity: how many
+	// times an attempt was held back after consecutive failures, and how much
+	// wall-clock time that cost. A non-zero value means the target was failing
+	// badly enough that the generator chose to back off rather than hammer it -
+	// read this alongside CompletionPercent, not as a separate problem.
+	BackoffEvents  int64   `json:"backoff_events,omitempty"`
+	BackoffSeconds float64 `json:"backoff_seconds,omitempty"`
 }
 
 // MonitoringSample is one second of server-side state. Metrics is a map rather

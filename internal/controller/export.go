@@ -84,6 +84,8 @@ func writeRunCSV(w http.ResponseWriter, item runView) {
 	write("lifecycle", "completion_percent", "", result.CompletionPercent)
 	write("lifecycle", "dropped_arrivals", "", result.DroppedArrivals)
 	write("lifecycle", "latency_from_intended_arrival", "", result.LatencyFromIntendedArrival)
+	write("lifecycle", "backoff_events", "", result.BackoffEvents)
+	write("lifecycle", "backoff_seconds", "", result.BackoffSeconds)
 
 	write("throughput", "requests_per_second", "", result.ThroughputRPS)
 	write("throughput", "output_tokens_per_second", "", result.Tokens.OutputPerSecond)

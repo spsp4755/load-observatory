@@ -10,6 +10,8 @@ import (
 	"hash/fnv"
 	"io"
 	"math"
+	"math/rand"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -30,6 +32,12 @@ const (
 	// pooled percentile computation. ITL produces one sample per token, so this
 	// is reachable; sampleSet decimates uniformly rather than truncating.
 	maxSamplesPerMetric = 100000
+
+	// circuitBreakerThreshold tolerates a couple of failures (a single bad
+	// request, a brief blip) before assuming the target itself is down.
+	circuitBreakerThreshold = 3
+	baseBackoff             = 500 * time.Millisecond
+	maxBackoff              = 30 * time.Second
 )
 
 // sampleSet keeps a bounded, evenly spread subset of the values it is given, so
@@ -112,6 +120,11 @@ type measurements struct {
 	active, waiting, targetLoad atomic.Int64
 	phase                       atomic.Value
 	drainedSeconds              atomic.Int64
+
+	// consecutiveFailures drives the circuit breaker: a dead target should be
+	// backed off from, not hammered at full concurrency, and a target that just
+	// recovered should not get hit by every VU's pent-up retry at once.
+	consecutiveFailures, backoffEvents, backoffMillis atomic.Int64
 
 	sequence        atomic.Int64
 	journeySequence atomic.Int64
@@ -212,6 +225,20 @@ func jitter(seed string, sequence int64, stdev int) int {
 	return int(digest.Sum32()%uint32(span)) - stdev
 }
 
+// loadTransport tunes Go's default HTTP transport for one target under
+// concurrent load. The zero-value transport caps idle connections at 2 per
+// host, so hundreds of VUs would otherwise re-handshake TCP for nearly every
+// request instead of reusing a connection - overhead a real client fleet
+// would not pay, and it can exhaust ephemeral ports on the generator host
+// under sustained high RPS.
+func loadTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 2048
+	transport.MaxIdleConnsPerHost = 2048
+	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	return transport
+}
+
 func Run(ctx context.Context, targetURL string, config core.RunConfig) core.RunResult {
 	return RunTarget(ctx, core.Target{Type: core.TargetTypeWeb, URL: targetURL}, config)
 }
@@ -229,7 +256,7 @@ func RunTargetWithProgress(ctx context.Context, target core.Target, config core.
 	m.steadyAfter = time.Duration(config.SteadyStateSeconds) * time.Second
 	m.setPhase(phaseWarmup)
 	m.stop = cancelRun
-	client := &http.Client{}
+	client := &http.Client{Transport: loadTransport()}
 	for range config.WarmupRequests {
 		doRequest(runCtx, client, target, config, m, nil, time.Now())
 	}
@@ -453,7 +480,49 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 	m.completeSession(m.successCount()-before == int64(len(config.Scenario)))
 }
 
+// backoffBeforeAttempt holds a new attempt back when the target has been
+// failing consecutively, instead of retrying it at full VU/RPS concurrency.
+// Without this, a dead target gets hammered for the rest of the run, and the
+// instant it recovers every pent-up VU hits it at once and can take it back
+// down - the generator recreating the outage it was trying to measure past.
+// The delay counts as generator delay (the send is late relative to when it
+// was scheduled), which is the honest classification: the generator chose to
+// wait, the target didn't cause it.
+func (m *measurements) backoffBeforeAttempt(ctx context.Context) {
+	failures := m.consecutiveFailures.Load()
+	if failures < circuitBreakerThreshold {
+		return
+	}
+	delay := backoffDelay(failures)
+	m.backoffEvents.Add(1)
+	m.backoffMillis.Add(delay.Milliseconds())
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+	}
+}
+
+// backoffDelay is the exponential-with-jitter curve for how long to hold an
+// attempt back after consecutiveFailures failures in a row. Jitter is applied
+// so VUs that failed together don't retry together - a synchronized retry the
+// moment the target recovers is the same thundering herd with extra steps.
+func backoffDelay(consecutiveFailures int64) time.Duration {
+	shift := consecutiveFailures - circuitBreakerThreshold
+	if shift > 6 { // 500ms << 6 = 32s, already past maxBackoff
+		shift = 6
+	}
+	delay := baseBackoff << uint(shift)
+	if delay > maxBackoff {
+		delay = maxBackoff
+	}
+	return delay/2 + time.Duration(rand.Int63n(int64(delay/2)+1))
+}
+
 func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, history []chatMessage, scheduled time.Time) (time.Duration, string) {
+	m.backoffBeforeAttempt(ctx)
+	if ctx.Err() != nil {
+		return 0, ""
+	}
 	sequence, varied, name, prompt, think, maxTokens := m.nextWorkload(config)
 	call := m.beginAttempt(name, scheduled)
 	m.active.Add(1)
@@ -851,6 +920,7 @@ func (m *measurements) scenarioLocked(name string) *scenarioMeasurement {
 }
 
 func (m *measurements) recordSuccess(call attempt, latency int64, timing modelTiming, status int, usage core.TokenUsage, config core.RunConfig) {
+	m.consecutiveFailures.Store(0)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.successes++
@@ -955,6 +1025,7 @@ func (m *measurements) recordCancelled(call attempt) {
 }
 
 func (m *measurements) recordTransportError(call attempt, message string) {
+	m.consecutiveFailures.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transportErrors++
@@ -966,6 +1037,7 @@ func (m *measurements) recordTransportError(call attempt, message string) {
 }
 
 func (m *measurements) recordHTTPFailure(call attempt, latency int64, status int, message string) {
+	m.consecutiveFailures.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.httpFailures++
@@ -1098,6 +1170,7 @@ func (m *measurements) result(config core.RunConfig) core.RunResult {
 		DrainedSeconds: m.drainedSeconds.Load(), Samples: samples,
 		GeneratorDelay: distribution(m.generatorDelays.values), LatencyFromIntendedArrival: config.Mode == core.LoadModeRPS,
 		MissingUsageResponses: m.missingUsage, ContentChunks: m.contentChunks, OutputLengthPinned: config.IgnoreEOS, ContextAccumulated: config.AccumulateContext, SamplesDecimated: samples != nil && samples.Decimated,
+		BackoffEvents: m.backoffEvents.Load(), BackoffSeconds: time.Duration(m.backoffMillis.Load() * int64(time.Millisecond)).Seconds(),
 	}
 }
 func p95(values []int64) int64 {
