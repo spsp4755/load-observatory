@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.2
+
+- 릴리스 이미지 아카이브를 gzip 압축 상태(`images/*.tar.gz`)로 배포 — `podman load`가 압축 해제 없이 바로 읽으므로, 폐쇄망 반입 후 개별 이미지를 따로 풀 필요가 없어짐(번들 전체는 여전히 한 번 풀어야 함). 대상 아키텍처는 x86_64(linux/amd64).
+
 ## v0.3.1
 
 - Traefik Ingress 추가 (`load-observatory.kubagents-ofc.koreacb.com`, TLS) — `web` Service가 클러스터 밖에서 도달 가능해짐. 호스트를 바꾸면 Ingress·`OIDC_REDIRECT_URL`·Keycloak Redirect URI 세 곳을 함께 바꿔야 함(문서화됨).

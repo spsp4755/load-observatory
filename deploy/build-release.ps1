@@ -36,16 +36,29 @@ foreach ($image in $images) {
   } else {
     Invoke-ContainerEngine pull --platform linux/amd64 $image.Tag
   }
-  Invoke-ContainerEngine save --output (Join-Path $bundle "images/$($image.Name).tar") $image.Tag
+  $tarPath = Join-Path $bundle "images/$($image.Name).tar"
+  Invoke-ContainerEngine save --output $tarPath $image.Tag
+  # gzip in place: podman load reads a gzip-compressed tar directly, so the
+  # disconnected host never has to decompress an image before loading it -
+  # only the outer bundle needs one extraction.
+  $inStream = [System.IO.File]::OpenRead($tarPath)
+  $outStream = [System.IO.File]::Create("$tarPath.gz")
+  $gzipStream = New-Object System.IO.Compression.GZipStream($outStream, [System.IO.Compression.CompressionLevel]::Optimal)
+  $inStream.CopyTo($gzipStream)
+  $gzipStream.Dispose(); $outStream.Dispose(); $inStream.Dispose()
+  Remove-Item -LiteralPath $tarPath
 }
 
 @"
-# Load Observatory $Version (linux/amd64)
+# Load Observatory $Version (linux/amd64 / x86_64)
 
-This archive contains OCI-compatible image archives. Load them on the disconnected deployment host with Podman, then follow `deploy/offline-deploy.md`.
+This archive contains gzip-compressed OCI image archives (images/*.tar.gz).
+Load them directly on the disconnected deployment host with Podman - no
+separate decompression step needed, e.g. ``podman load -i images/controller.tar.gz`` -
+then follow `deploy/offline-deploy.md`.
 "@ | Set-Content -LiteralPath (Join-Path $bundle 'README.md') -NoNewline
 
-Get-ChildItem -LiteralPath (Join-Path $bundle 'images') -Filter '*.tar' | ForEach-Object {
+Get-ChildItem -LiteralPath (Join-Path $bundle 'images') -Filter '*.tar.gz' | ForEach-Object {
   Get-FileHash -Algorithm SHA256 $_.FullName
 } | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content -LiteralPath (Join-Path $bundle 'SHA256SUMS')
 

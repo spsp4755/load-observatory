@@ -1,17 +1,35 @@
 # 폐쇄망 Kubernetes 배포
 
-이 릴리스는 `linux/amd64` 이미지 아카이브입니다. 인터넷 연결이 가능한 빌드 호스트에서 `build-release.ps1`를 실행해 만들고, 생성된 `load-observatory-v0.1.0-amd64.tar.gz`를 폐쇄망으로 반입합니다.
+이 릴리스는 `linux/amd64`(x86_64) 이미지 아카이브입니다. 인터넷 연결이 가능한 빌드 호스트에서 `build-release.ps1`를 실행해 만들고, 생성된 `load-observatory-vX.Y.Z-amd64.tar.gz`를 폐쇄망으로 반입합니다.
+
+이미지 각각(`images/*.tar.gz`)은 **gzip 압축된 채로** 들어있습니다. `podman load`가 gzip을 직접 읽으므로, 개별 이미지는 따로 압축을 풀 필요가 없습니다 — 번들 전체(바깥쪽 `.tar.gz`)만 한 번 풀면 됩니다.
 
 ## 1. 이미지 반입과 내부 레지스트리 게시
 
-폐쇄망의 Podman 호스트에서 아카이브를 풉니다. `SHA256SUMS`로 반입 파일을 먼저 검증합니다.
+폐쇄망의 Podman 호스트(x86_64, Linux 기준)에서 번들을 풉니다. `SHA256SUMS`로 반입 파일을 먼저 검증합니다.
 
-```powershell
-tar -xzf .\load-observatory-v0.1.0-amd64.tar.gz
-Set-Location .\load-observatory-v0.1.0-amd64
-Get-FileHash .\images\*.tar -Algorithm SHA256
-powershell -ExecutionPolicy Bypass -File .\deploy\load-images.ps1 -ArchiveDirectory .\images -Registry registry.internal:5000 -Version v0.1.0
+```bash
+tar -xzf load-observatory-vX.Y.Z-amd64.tar.gz
+cd load-observatory-vX.Y.Z-amd64
+sha256sum -c SHA256SUMS
+
+REGISTRY=registry.internal:5000
+for f in images/*.tar.gz; do
+  podman load -i "$f"          # 압축 풀지 않고 바로 로드
+done
 ```
+
+로드된 이미지 태그는 `podman images`로 확인한 뒤, 내부 레지스트리로 각각 태깅·푸시합니다.
+
+```bash
+for tag in load-observatory/controller:vX.Y.Z load-observatory/agent:vX.Y.Z load-observatory/web:vX.Y.Z \
+           postgres:16 prom/prometheus:v2.54.1 \
+           nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04 prom/node-exporter:v1.8.2; do
+  podman tag "$tag" "$REGISTRY/load-observatory/$(basename $(echo $tag | tr ':' '/'))"
+done
+```
+
+(Windows/PowerShell 반입 호스트라면 `pwsh`가 있는 경우 대신 `deploy/load-images.ps1 -ArchiveDirectory .\images -Registry registry.internal:5000 -Version vX.Y.Z`로 태깅·푸시까지 자동화할 수 있습니다 — 로드 방식은 동일하게 압축을 풀지 않습니다.)
 
 `registry.internal:5000`은 클러스터 노드가 접근할 수 있는 폐쇄망 레지스트리 주소로 바꿉니다. Kubernetes 런타임과 Podman 저장소가 공유되지 않는 경우가 일반적이므로, 모든 노드에 직접 `podman load`만 하는 대신 내부 레지스트리로 게시하는 방식을 권장합니다.
 
