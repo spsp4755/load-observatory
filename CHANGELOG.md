@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0
+
+실무 회복력과 접근 통제.
+
+- 대상 서버가 죽으면 무한정 재시도하는 대신 연속 실패 시 지수 백오프(jitter 포함)로 대기 — 복구되는 순간 모든 VU가 한꺼번에 몰려가서 다시 죽이는 문제 방지 (`BackoffEvents`/`BackoffSeconds`)
+- HTTP 커넥션 풀 튜닝 (`MaxIdleConnsPerHost`) — Go 기본값(호스트당 2개)이 다수 VU 환경에서 불필요한 TCP 재수립을 유발하던 문제 수정
+- Keycloak(OIDC) 로그인 연동 — 서명된 stateless 쿠키 세션, `OIDC_ISSUER_URL` 미설정 시 기존처럼 로그인 없이 동작(하위 호환)
+- 실행 감사 로그 — 로그인한 사용자가 실행을 시작하면 `created_by`로 기록, 실행 목록·export에 노출
+
 ## v0.2.0
 
 측정 신뢰성 고도화. "부하를 걸었다"에서 "안정 용량을 증명했다"로.
