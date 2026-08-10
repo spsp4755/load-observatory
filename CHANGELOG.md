@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1
+
+- Traefik Ingress 추가 (`load-observatory.kubagents-ofc.koreacb.com`, TLS) — `web` Service가 클러스터 밖에서 도달 가능해짐. 호스트를 바꾸면 Ingress·`OIDC_REDIRECT_URL`·Keycloak Redirect URI 세 곳을 함께 바꿔야 함(문서화됨).
+
 ## v0.3.0
 
 실무 회복력과 접근 통제.
