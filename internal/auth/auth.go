@@ -215,6 +215,13 @@ type sessionClaims struct {
 	Exp int64 `json:"exp"`
 }
 
+// NewSessionCookieForTesting mints a valid session cookie without going
+// through the OIDC redirect dance, so other packages can test what happens
+// behind Require without standing up a real Keycloak.
+func (g *Gate) NewSessionCookieForTesting(user User) (*http.Cookie, error) {
+	return g.signSession(user)
+}
+
 func (g *Gate) signSession(user User) (*http.Cookie, error) {
 	payload, err := json.Marshal(sessionClaims{User: user, Exp: time.Now().Add(sessionTTL).Unix()})
 	if err != nil {

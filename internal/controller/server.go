@@ -388,6 +388,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run := s.store.CreateRun(config)
+	if user, ok := auth.UserFromContext(r.Context()); ok {
+		s.store.SetCreatedBy(run.ID, user.Name)
+		run.CreatedBy = user.Name
+	}
 	s.store.AddMonitoring(run.ID, s.monitor.Sample())
 	writeJSON(w, http.StatusCreated, view(run))
 }

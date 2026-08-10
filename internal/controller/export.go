@@ -45,6 +45,7 @@ func writeRunCSV(w http.ResponseWriter, item runView) {
 	result := item.Result
 
 	write("run", "id", "", item.ID)
+	write("run", "created_by", "", item.CreatedBy)
 	write("run", "status", "", item.Status)
 	write("run", "load", "", loadOf(item.Config))
 	write("run", "duration_seconds", "", item.Config.DurationSeconds)

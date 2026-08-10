@@ -16,6 +16,10 @@ type Store interface {
 	ListTargets() []core.Target
 	DeleteTarget(string) DeleteTargetResult
 	CreateRun(core.RunConfig) core.Run
+	// SetCreatedBy records who launched a run, for audit purposes. A separate
+	// call rather than a CreateRun parameter, so it stays optional: a run
+	// created with no signed-in user (auth disabled) just never gets one.
+	SetCreatedBy(id, user string)
 	GetRun(string) (core.Run, bool)
 	CancelRun(string) (core.Run, bool)
 	ListRuns() []core.Run
@@ -352,6 +356,17 @@ func (s *MemoryStore) queueShardsLocked(run core.Run) {
 		shard := core.Shard{ID: fmt.Sprintf("shard-%d", s.nextID), RunID: run.ID, Status: "queued", Index: i}
 		s.shards[shard.ID] = shard
 	}
+}
+
+func (s *MemoryStore) SetCreatedBy(id, user string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok {
+		return
+	}
+	run.CreatedBy = user
+	s.runs[id] = run
 }
 
 func (s *MemoryStore) GetRun(id string) (core.Run, bool) {

@@ -347,6 +347,9 @@ type Run struct {
 	// DetectedServer is the configuration scraped from the model server itself,
 	// kept separate from what the operator entered so a contradiction is visible.
 	DetectedServer ServerConfig `json:"detected_server,omitempty"`
+	// CreatedBy is who launched the run - empty when auth is disabled or the
+	// caller wasn't signed in. Audit information, not a permission check.
+	CreatedBy string `json:"created_by,omitempty"`
 }
 
 type AutoSearchStatus string

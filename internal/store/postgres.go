@@ -73,6 +73,10 @@ func (s *PostgresStore) CreateRun(v core.RunConfig) core.Run {
 	s.persist()
 	return r
 }
+func (s *PostgresStore) SetCreatedBy(id, user string) {
+	s.memory.SetCreatedBy(id, user)
+	s.persist()
+}
 func (s *PostgresStore) GetRun(v string) (core.Run, bool) { return s.memory.GetRun(v) }
 func (s *PostgresStore) CancelRun(v string) (core.Run, bool) {
 	run, ok := s.memory.CancelRun(v)

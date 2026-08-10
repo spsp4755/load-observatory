@@ -1595,6 +1595,7 @@ function Records({ runs, choose }) {
         <thead>
           <tr>
             <th>실행</th>
+            <th>실행자</th>
             <th>유형</th>
             <th>부하</th>
             <th>캐시</th>
@@ -1616,6 +1617,7 @@ function Records({ runs, choose }) {
                 onClick={() => choose(item)}
               >
                 <td>{item.id}</td>
+                <td>{item.created_by || "—"}</td>
                 <td>{item.search_id ? "자동 탐색" : "수동"}</td>
                 <td>{loadText(item)}</td>
                 <td>{policyText(item)}</td>
