@@ -3,6 +3,13 @@ async function request(path, options = {}) {
     headers: { "Content-Type": "application/json", ...options.headers },
     ...options,
   });
+  // A session can expire mid-use (a long run can outlive the cookie). Send the
+  // browser back through the Keycloak login rather than surfacing a raw 401 the
+  // user has no way to act on.
+  if (response.status === 401 && path !== "/api/session") {
+    window.location.assign("/auth/login");
+    return new Promise(() => {}); // navigation is in flight; never resolve
+  }
   if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
   return response.status === 204 ? null : response.json();
 }
@@ -16,6 +23,8 @@ export const cancelRun = (id) => request(`/api/runs/${id}/cancel`, { method: "PO
 export const getRun = (id) => request(`/api/runs/${id}`);
 export const listRuns = () => request("/api/runs");
 export const getHealth = () => request("/api/health");
+export const getSession = () => request("/api/session");
+export const logout = () => request("/auth/logout", { method: "POST" }).then(() => window.location.assign("/"));
 export const createSearch = (search) => request("/api/searches", { method: "POST", body: JSON.stringify(search) });
 export const getSearch = (id) => request(`/api/searches/${id}`);
 export const cancelSearch = (id) => request(`/api/searches/${id}/cancel`, { method: "POST" });

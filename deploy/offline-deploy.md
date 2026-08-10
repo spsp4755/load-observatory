@@ -31,10 +31,33 @@ kubectl -n load-observatory create secret generic postgres-credentials `
   --from-literal=POSTGRES_USER=load_observatory `
   --from-literal=POSTGRES_PASSWORD=$password `
   --from-literal=DATABASE_URL="postgres://load_observatory:$password@postgres:5432/load_observatory?sslmode=disable" `
-  --from-literal=TARGET_API_KEY_ENCRYPTION_KEY=$encryptionKey
+  --from-literal=TARGET_API_KEY_ENCRYPTION_KEY=$encryptionKey `
+  --from-literal=OIDC_CLIENT_SECRET=$oidcClientSecret `
+  --from-literal=SESSION_SECRET=$sessionSecret
 ```
 
 Secret 생성이 실패하면서 이미 존재한다고 나오면, 기존 Secret의 값이 올바른지 확인한 뒤 재사용하거나 명시적으로 교체합니다.
+
+### Keycloak 로그인 (선택)
+
+`OIDC_ISSUER_URL`을 비워두면(기본값) 로그인 없이 기존처럼 동작합니다. Keycloak 로그인을 켜려면:
+
+1. Keycloak에서 **confidential** 클라이언트를 만듭니다. Redirect URI는 `k8s.yaml`의 `OIDC_REDIRECT_URL`과 정확히 일치해야 합니다 (예: `https://load-observatory.internal/auth/callback`).
+2. 클라이언트 시크릿과 세션 서명용 랜덤 문자열(32바이트 이상)을 준비합니다.
+
+```powershell
+$oidcClientSecret = Read-Host 'Keycloak client secret'
+$sessionKey = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Fill($sessionKey)
+$sessionSecret = [Convert]::ToBase64String($sessionKey)
+```
+
+(위 Secret 생성 명령의 `$oidcClientSecret`/`$sessionSecret` 변수가 이 값을 씁니다. 로그인을 켜지 않을 거면 두 값 모두 아무 문자열이나 넣어도 무방합니다 — 안 쓰입니다.)
+
+3. `k8s.yaml`의 `controller` Deployment에서 `OIDC_ISSUER_URL`(Keycloak realm 주소, 예: `https://keycloak.internal/realms/load-observatory`)과 `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URL`을 실제 값으로 채웁니다.
+4. 컨트롤러가 시작할 때 Keycloak이 아직 안 떠 있어도 됩니다 — discovery를 30초 간격으로 재시도하며, 준비되기 전에 로그인을 시도하면 503으로 응답합니다.
+5. 로그인한 사용자 정보는 서명된 쿠키(`lo_session`, HttpOnly)로만 유지됩니다 — 서버 쪽 세션 저장소가 없으므로 컨트롤러를 여러 replica로 늘려도 세션이 깨지지 않습니다.
+6. `/api/agent/*`(에이전트가 부르는 내부 API)와 `/api/health`는 로그인을 켜도 그대로 열려 있습니다 — 에이전트는 브라우저가 아니라 로그인 리다이렉트를 탈 수 없기 때문입니다. 이 경로는 네트워크 수준에서 신뢰(클러스터 내부에서만 도달 가능)해야 합니다.
 
 ## 3. 이미지 주소 렌더링 및 배포
 

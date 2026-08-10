@@ -8,6 +8,8 @@ import {
   createTarget,
   deleteTarget,
   getHealth,
+  getSession,
+  logout,
   getRun,
   getSearch,
   listRuns,
@@ -1750,6 +1752,14 @@ function Comparison({ runs }) {
 
 export default function App() {
   const [page, setPage] = useState("test");
+  const [session, setSession] = useState(null);
+  useEffect(() => {
+    // A 401 here (no login configured, or not signed in yet) is expected and
+    // not an error to surface - it just means no user badge to show.
+    getSession()
+      .then(setSession)
+      .catch(() => setSession(null));
+  }, []);
   const [mode, setMode] = useState("manual");
   const [form, setForm] = useState(initial);
   const { callsPerUser, outputBudget } = workloadShape(form);
@@ -1981,6 +1991,11 @@ export default function App() {
               </button>
             )}
             <span className="online">● Controller online</span>
+            {session && (
+              <span className="session-user">
+                {session.name} <button onClick={logout}>로그아웃</button>
+              </span>
+            )}
           </div>
         </header>
         {error && <p className="error">{error}</p>}

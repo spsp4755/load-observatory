@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/spsp4755/load-observatory/internal/auth"
 	"github.com/spsp4755/load-observatory/internal/controller"
 	"github.com/spsp4755/load-observatory/internal/monitor"
 	"github.com/spsp4755/load-observatory/internal/store"
@@ -29,5 +30,22 @@ func main() {
 		defer postgres.Close()
 		data = postgres
 	}
-	log.Fatal(http.ListenAndServe(address, controller.NewServerWithMonitor(data, monitor.New(os.Getenv("PROMETHEUS_URL")))))
+	server := controller.NewServerWithMonitor(data, monitor.New(os.Getenv("PROMETHEUS_URL")))
+	if issuer := os.Getenv("OIDC_ISSUER_URL"); issuer != "" {
+		sessionKey := []byte(os.Getenv("SESSION_SECRET"))
+		if len(sessionKey) < 32 {
+			log.Fatal("SESSION_SECRET must be set to at least 32 bytes when OIDC_ISSUER_URL is configured")
+		}
+		server = server.WithAuth(auth.NewGate(auth.Config{
+			IssuerURL:    issuer,
+			ClientID:     os.Getenv("OIDC_CLIENT_ID"),
+			ClientSecret: os.Getenv("OIDC_CLIENT_SECRET"),
+			RedirectURL:  os.Getenv("OIDC_REDIRECT_URL"),
+			SessionKey:   sessionKey,
+		}))
+		log.Printf("auth: Keycloak login required (issuer %s)", issuer)
+	} else {
+		log.Print("auth: OIDC_ISSUER_URL not set, running with no login (open access)")
+	}
+	log.Fatal(http.ListenAndServe(address, server))
 }

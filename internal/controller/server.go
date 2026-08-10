@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spsp4755/load-observatory/internal/auth"
 	"github.com/spsp4755/load-observatory/internal/core"
 	"github.com/spsp4755/load-observatory/internal/monitor"
 	"github.com/spsp4755/load-observatory/internal/store"
@@ -17,13 +18,24 @@ import (
 type Server struct {
 	store   store.Store
 	monitor monitor.Client
+	auth    *auth.Gate
 }
 
-func NewServer(memory store.Store) *Server { return &Server{store: memory} }
+func NewServer(memory store.Store) *Server {
+	return &Server{store: memory, auth: auth.NewGate(auth.Config{})}
+}
 func NewServerWithMonitor(memory store.Store, client monitor.Client) *Server {
-	server := &Server{store: memory, monitor: client}
+	server := &Server{store: memory, monitor: client, auth: auth.NewGate(auth.Config{})}
 	go server.sampleServerMetrics()
 	return server
+}
+
+// WithAuth enables Keycloak (or any OIDC provider) login. Without this call,
+// the human-facing API stays open - the behavior every existing deployment
+// and test relies on.
+func (s *Server) WithAuth(gate *auth.Gate) *Server {
+	s.auth = gate
+	return s
 }
 
 // sampleServerMetrics attaches one server-side sample per second to every running
@@ -50,8 +62,41 @@ func (s *Server) sampleServerMetrics() {
 	}
 }
 
+// ServeHTTP splits requests into three trust levels: the OIDC dance and the
+// health check are public by nature, the agent endpoints are machine-to-
+// machine (an agent has no browser to run a login redirect in, so it is
+// trusted at the network level like it always was), and everything else - the
+// browser-facing API a human uses to register targets and launch runs - sits
+// behind a session.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/auth/login":
+		s.auth.Login(w, r)
+	case r.URL.Path == "/auth/callback":
+		s.auth.Callback(w, r)
+	case r.URL.Path == "/auth/logout":
+		s.auth.Logout(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
+		queued, running, agentOnline := s.store.Health()
+		writeJSON(w, http.StatusOK, map[string]any{"controller_online": true, "agent_online": agentOnline, "queued_runs": queued, "running_runs": running, "login_required": s.auth.Enabled()})
+	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/heartbeat":
+		s.store.TouchAgent()
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/claim":
+		s.claimRun(w)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/result"):
+		s.completeShard(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/progress"):
+		s.reportProgress(w, r)
+	default:
+		s.auth.Require(http.HandlerFunc(s.serveHumanAPI)).ServeHTTP(w, r)
+	}
+}
+
+func (s *Server) serveHumanAPI(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/session":
+		s.auth.Session(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/targets":
 		s.createTarget(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/targets":
@@ -74,18 +119,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.cancelSearch(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/runs":
 		writeJSON(w, http.StatusOK, listView(s.store.ListRuns()))
-	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
-		queued, running, agentOnline := s.store.Health()
-		writeJSON(w, http.StatusOK, map[string]any{"controller_online": true, "agent_online": agentOnline, "queued_runs": queued, "running_runs": running})
-	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/heartbeat":
-		s.store.TouchAgent()
-		w.WriteHeader(http.StatusNoContent)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/claim":
-		s.claimRun(w)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/result"):
-		s.completeShard(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/agent/runs/") && strings.HasSuffix(r.URL.Path, "/progress"):
-		s.reportProgress(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/runs/") && (strings.HasSuffix(r.URL.Path, "/export.json") || strings.HasSuffix(r.URL.Path, "/export.csv")):
 		s.exportRun(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/runs/"):

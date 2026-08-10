@@ -15,6 +15,10 @@ stringData:
   POSTGRES_PASSWORD: change-this-before-deploying
   DATABASE_URL: postgres://load_observatory:change-this-before-deploying@postgres:5432/load_observatory?sslmode=disable
   TARGET_API_KEY_ENCRYPTION_KEY: replace-with-base64-32-byte-key
+  # Leave OIDC_CLIENT_SECRET empty (and omit OIDC_ISSUER_URL below) to run with
+  # no login, exactly as before. Fill both in to require Keycloak sign-in.
+  OIDC_CLIENT_SECRET: ""
+  SESSION_SECRET: replace-with-a-random-32-byte-or-longer-string
 ---
 apiVersion: v1
 kind: Service
@@ -87,6 +91,21 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: TARGET_API_KEY_ENCRYPTION_KEY
+            # OIDC_ISSUER_URL empty (the default) means no login is required.
+            # Set it to require Keycloak sign-in - see deploy/offline-deploy.md.
+            - { name: OIDC_ISSUER_URL, value: "" }
+            - { name: OIDC_CLIENT_ID, value: "load-observatory" }
+            - { name: OIDC_REDIRECT_URL, value: "https://load-observatory.internal/auth/callback" }
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: OIDC_CLIENT_SECRET
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: SESSION_SECRET
           ports: [{ containerPort: 8080 }]
 ---
 apiVersion: apps/v1
