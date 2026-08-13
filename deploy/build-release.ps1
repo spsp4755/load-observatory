@@ -27,10 +27,7 @@ $images = @(
   @{ Name = 'controller'; Tag = "load-observatory/controller:$Version"; Dockerfile = 'deploy/Dockerfile.controller' },
   @{ Name = 'agent'; Tag = "load-observatory/agent:$Version"; Dockerfile = 'deploy/Dockerfile.agent' },
   @{ Name = 'web'; Tag = "load-observatory/web:$Version"; Dockerfile = 'deploy/Dockerfile.web' },
-  @{ Name = 'postgres-16'; Tag = 'postgres:16' },
-  @{ Name = 'prometheus'; Tag = 'prom/prometheus:v2.54.1' },
-  @{ Name = 'dcgm-exporter'; Tag = 'nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04' },
-  @{ Name = 'node-exporter'; Tag = 'prom/node-exporter:v1.8.2' }
+  @{ Name = 'postgres-16'; Tag = 'postgres:16' }
 )
 
 Remove-Item -LiteralPath $bundle -Recurse -Force -ErrorAction SilentlyContinue

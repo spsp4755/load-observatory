@@ -1,6 +1,6 @@
 # 폐쇄망 Kubernetes 배포 가이드
 
-이 릴리스는 `linux/amd64`(x86_64) 이미지 7개와 Harbor용 Kubernetes 매니페스트를 포함합니다.
+이 릴리스는 원격 모델 API 호출에 필요한 `linux/amd64`(x86_64) 이미지 4개(controller, agent, web, PostgreSQL)와 Harbor용 Kubernetes 매니페스트를 포함합니다. GPU/노드 exporter와 내장 Prometheus는 배포하지 않습니다.
 
 - Namespace: `load-observatory`
 - Harbor project: `harbor.kubagents-ofc.koreacb.com/load-observatory`
@@ -9,7 +9,7 @@
 
 ## 1. 가장 간단한 단일 이미지 아카이브 방식
 
-이미지 7개는 하나의 아카이브에 들어 있습니다. 압축을 풀지 않고 한 번에 로드합니다.
+이미지 4개는 하나의 아카이브에 들어 있습니다. 압축을 풀지 않고 한 번에 로드합니다.
 
 ```bash
 sha256sum -c load-observatory-v0.4.0-images-amd64.tar.gz.sha256
@@ -57,21 +57,14 @@ Harbor가 사설 CA를 사용한다면 CA 인증서를 Podman과 모든 Kubernet
 
 ## 4. Podman load 및 Harbor push
 
-압축된 이미지 파일은 별도 해제 없이 `podman load`로 직접 읽을 수 있습니다. 제공 스크립트는 7개 이미지를 로드하고 정해진 Harbor 경로로 tag/push합니다.
+압축된 이미지 파일은 별도 해제 없이 `podman load`로 직접 읽을 수 있습니다. 제공 스크립트는 4개 이미지를 로드하고 정해진 Harbor 경로로 tag/push합니다.
 
 ```bash
 chmod +x deploy/load-images.sh
 ./deploy/load-images.sh ./images harbor.kubagents-ofc.koreacb.com v0.4.0
 ```
 
-Kubernetes가 Harbor에서 이미지를 가져올 수 있도록 pull secret을 만듭니다.
-
-```bash
-kubectl -n load-observatory create secret docker-registry harbor-credentials \
-  --docker-server=harbor.kubagents-ofc.koreacb.com \
-  --docker-username='<HARBOR_USER>' \
-  --docker-password='<HARBOR_PASSWORD>'
-```
+이 매니페스트는 기존 클러스터의 Harbor 인증 설정을 사용하며 별도 `imagePullSecret`을 요구하지 않습니다.
 
 ## 5. 애플리케이션 Secret 생성
 
@@ -98,15 +91,9 @@ unset LO_POSTGRES_PASSWORD LO_ENCRYPTION_KEY LO_CAPTURE_TOKEN LO_SESSION_SECRET
 
 `CAPTURE_PROXY_TOKEN`은 최초 부팅용 값입니다. 배포 후 UI의 **실사용 캡처** 탭에서 새 토큰을 발급하면 PostgreSQL에 해시로 저장되며 Pod 재시작 없이 교체됩니다.
 
-## 6. TLS와 DNS
+## 6. Traefik과 DNS
 
-사내 인증서로 TLS Secret을 만들고, DNS가 Traefik 진입점 IP를 가리키게 합니다.
-
-```bash
-kubectl -n load-observatory create secret tls load-observatory-tls \
-  --cert=load-observatory.crt \
-  --key=load-observatory.key
-```
+Ingress는 기존 `traefik` IngressClass의 `websecure` entrypoint와 기본 TLS store를 사용합니다. 클러스터 정책상 이름 있는 인증서가 필요할 때만 `spec.tls[].secretName`을 추가합니다.
 
 DNS 레코드:
 
@@ -132,8 +119,7 @@ kubectl -n load-observatory get pods,svc,ingress
 ## 선택 설정
 
 - Keycloak: `controller`의 `OIDC_ISSUER_URL`을 realm URL로 바꾸고 `OIDC_CLIENT_SECRET` 값을 Secret에 넣습니다. Redirect URI는 `https://load-observatory.kubagents-ofc.koreacb.com/auth/callback`입니다.
-- GPU 노드만 모니터링: `dcgm-exporter` DaemonSet에 사내 GPU label 기준 `nodeSelector`/`tolerations`를 추가합니다.
-- 기존 Prometheus 사용: `PROMETHEUS_URL`을 기존 주소로 바꾸고 번들 내 Prometheus 및 exporter 리소스를 제거할 수 있습니다.
+- 원격 모델 서버 Prometheus 연동: 모델 서버 자체의 vLLM/SGLang/TGI 지표를 수집하는 Prometheus가 이 클러스터에서 접근 가능할 때만 controller의 `PROMETHEUS_URL`을 설정합니다. 설정하지 않아도 부하 테스트와 HTTP/토큰 지표는 정상 동작하며 서버 지표만 `미수집`으로 표시됩니다.
 - 네트워크 범위: 기본 NetworkPolicy는 RFC1918 목적지만 허용합니다. 실제 모델 서버·DNS·Keycloak 대역에 맞게 더 좁히십시오.
 
 ## 롤백

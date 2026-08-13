@@ -33,8 +33,5 @@ load_and_push controller.tar.gz "load-observatory/controller:$VERSION" "load-obs
 load_and_push agent.tar.gz "load-observatory/agent:$VERSION" "load-observatory/agent:$VERSION"
 load_and_push web.tar.gz "load-observatory/web:$VERSION" "load-observatory/web:$VERSION"
 load_and_push postgres-16.tar.gz "postgres:16" "load-observatory/postgres:16"
-load_and_push prometheus.tar.gz "prom/prometheus:v2.54.1" "load-observatory/prometheus:v2.54.1"
-load_and_push dcgm-exporter.tar.gz "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04" "load-observatory/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04"
-load_and_push node-exporter.tar.gz "prom/node-exporter:v1.8.2" "load-observatory/node-exporter:v1.8.2"
 
-echo "All linux/amd64 images were pushed to $REGISTRY/load-observatory"
+echo "All four linux/amd64 images were pushed to $REGISTRY/load-observatory"
