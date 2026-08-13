@@ -7,7 +7,26 @@
 - Service URL: `https://load-observatory.kubagents-ofc.koreacb.com`
 - 배포 파일: `k8s-harbor.yaml`
 
-## 1. 반입 파일 검증
+## 1. 가장 간단한 단일 이미지 아카이브 방식
+
+이미지 7개는 하나의 아카이브에 들어 있습니다. 압축을 풀지 않고 한 번에 로드합니다.
+
+```bash
+sha256sum -c load-observatory-v0.4.0-images-amd64.tar.gz.sha256
+podman load -i load-observatory-v0.4.0-images-amd64.tar.gz
+```
+
+Harbor로 tag/push까지 자동 처리하려면 Release에서 받은 `load-images.sh`에 같은 파일을 전달합니다. 스크립트 내부에서도 `podman load`는 한 번만 실행됩니다.
+
+```bash
+chmod +x load-images.sh
+./load-images.sh ./load-observatory-v0.4.0-images-amd64.tar.gz \
+  harbor.kubagents-ofc.koreacb.com v0.4.0
+```
+
+`k8s-harbor.yaml`도 GitHub Release에서 독립 파일로 받을 수 있습니다. 아래 전체 번들은 문서와 개별 이미지까지 보관해야 할 때만 사용하십시오.
+
+## 2. 전체 배포 번들 방식
 
 인터넷 연결이 가능한 빌드 PC에서 받은 두 파일을 폐쇄망으로 함께 반입합니다.
 
@@ -25,7 +44,7 @@ cd load-observatory-v0.4.0-amd64
 sha256sum -c SHA256SUMS
 ```
 
-## 2. Harbor 프로젝트와 Namespace 준비
+## 3. Harbor 프로젝트와 Namespace 준비
 
 Harbor에 `load-observatory` 프로젝트를 만들고 push 가능한 계정을 준비합니다. Kubernetes Namespace는 다음 이름으로 만듭니다.
 
@@ -36,7 +55,7 @@ podman login harbor.kubagents-ofc.koreacb.com
 
 Harbor가 사설 CA를 사용한다면 CA 인증서를 Podman과 모든 Kubernetes 노드의 신뢰 저장소에 먼저 등록하십시오. `--tls-verify=false`는 운영 환경에서 권장하지 않습니다.
 
-## 3. Podman load 및 Harbor push
+## 4. Podman load 및 Harbor push
 
 압축된 이미지 파일은 별도 해제 없이 `podman load`로 직접 읽을 수 있습니다. 제공 스크립트는 7개 이미지를 로드하고 정해진 Harbor 경로로 tag/push합니다.
 
@@ -54,7 +73,7 @@ kubectl -n load-observatory create secret docker-registry harbor-credentials \
   --docker-password='<HARBOR_PASSWORD>'
 ```
 
-## 4. 애플리케이션 Secret 생성
+## 5. 애플리케이션 Secret 생성
 
 비밀번호와 키를 셸 기록에 남기지 않도록 먼저 환경변수로 읽고, Secret을 생성한 뒤 즉시 해제합니다. PostgreSQL 비밀번호에는 URL 예약 문자를 피하거나 URL 인코딩한 값을 `DATABASE_URL`에 사용하십시오.
 
@@ -79,7 +98,7 @@ unset LO_POSTGRES_PASSWORD LO_ENCRYPTION_KEY LO_CAPTURE_TOKEN LO_SESSION_SECRET
 
 `CAPTURE_PROXY_TOKEN`은 최초 부팅용 값입니다. 배포 후 UI의 **실사용 캡처** 탭에서 새 토큰을 발급하면 PostgreSQL에 해시로 저장되며 Pod 재시작 없이 교체됩니다.
 
-## 5. TLS와 DNS
+## 6. TLS와 DNS
 
 사내 인증서로 TLS Secret을 만들고, DNS가 Traefik 진입점 IP를 가리키게 합니다.
 
@@ -95,7 +114,7 @@ DNS 레코드:
 load-observatory.kubagents-ofc.koreacb.com -> <TRAEFIK_INGRESS_IP>
 ```
 
-## 6. 배포 및 확인
+## 7. 배포 및 확인
 
 `k8s-harbor.yaml`에는 예시 비밀번호 Secret이 없고, 모든 이미지는 `v0.4.0` 또는 고정된 upstream 버전으로 지정되어 있습니다.
 

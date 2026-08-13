@@ -15,8 +15,20 @@ $images = @(
   @{ Archive = 'node-exporter.tar.gz'; Source = 'prom/node-exporter:v1.8.2'; Destination = 'load-observatory/node-exporter:v1.8.2' }
 )
 
+$loadSeparately = Test-Path -LiteralPath $ArchiveDirectory -PathType Container
+if (-not $loadSeparately) {
+  if (-not (Test-Path -LiteralPath $ArchiveDirectory -PathType Leaf)) {
+    throw "Archive file or image directory not found: $ArchiveDirectory"
+  }
+  podman load -i $ArchiveDirectory
+  if ($LASTEXITCODE -ne 0) { throw "podman load failed: $ArchiveDirectory" }
+}
+
 foreach ($image in $images) {
-  podman load -i (Join-Path $ArchiveDirectory $image.Archive)
+  if ($loadSeparately) {
+    podman load -i (Join-Path $ArchiveDirectory $image.Archive)
+    if ($LASTEXITCODE -ne 0) { throw "podman load failed: $($image.Archive)" }
+  }
   $destination = "$Registry/$($image.Destination)"
   podman tag $image.Source $destination
   podman push $destination

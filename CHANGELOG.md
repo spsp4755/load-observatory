@@ -7,6 +7,7 @@
 - 캡처 토큰을 UI에서 발급·교체하고 해시만 PostgreSQL에 저장하도록 했습니다.
 - 실행 결과에 workload 구성, 시나리오별 지표, 안정 용량 근거와 비교 정보를 보강했습니다.
 - linux/amd64 폐쇄망 번들에 고정 버전 이미지 7개, Harbor 렌더링 매니페스트, Podman load/push 스크립트 및 SHA-256 체크섬을 포함합니다.
+- 이미지 7개를 압축 해제 없이 `podman load -i` 한 번으로 불러오는 통합 다중 이미지 아카이브를 제공합니다.
 - Kubernetes 배포에 비루트 실행, health probe, resource requests/limits, Harbor imagePullSecret 연결을 추가했습니다.
 
 ## v0.3.2
