@@ -37,6 +37,11 @@ type Store interface {
 	ListSearches() []core.AutoSearch
 	CancelSearch(string) (core.AutoSearch, bool)
 	AdvanceSearch(string)
+	RecordCapture(core.CaptureSession, core.CaptureEvent) core.CaptureSession
+	ListCaptures() []core.CaptureSession
+	DeleteCapture(string) bool
+	GetCaptureSettings() core.CaptureSettings
+	SetCaptureSettings(core.CaptureSettings) core.CaptureSettings
 }
 
 type DeleteTargetResult int
@@ -48,14 +53,16 @@ const (
 )
 
 type MemoryStore struct {
-	mu           sync.RWMutex
-	nextID       int
-	targets      map[string]core.Target
-	runs         map[string]core.Run
-	searches     map[string]core.AutoSearch
-	searchRun    map[string]string
-	shards       map[string]core.Shard
-	shardResults map[string]core.RunResult
+	mu              sync.RWMutex
+	nextID          int
+	targets         map[string]core.Target
+	runs            map[string]core.Run
+	searches        map[string]core.AutoSearch
+	searchRun       map[string]string
+	shards          map[string]core.Shard
+	shardResults    map[string]core.RunResult
+	captures        map[string]core.CaptureSession
+	captureSettings core.CaptureSettings
 	// progress is live in-run telemetry keyed by shard ID. It is deliberately not
 	// part of the snapshot: it is worthless once the run ends.
 	progress  map[string]core.RunProgress
@@ -66,25 +73,29 @@ func (s *MemoryStore) Snapshot() ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return json.Marshal(struct {
-		NextID       int                        `json:"next_id"`
-		Targets      map[string]core.Target     `json:"targets"`
-		Runs         map[string]core.Run        `json:"runs"`
-		Searches     map[string]core.AutoSearch `json:"searches"`
-		SearchRun    map[string]string          `json:"search_run"`
-		Shards       map[string]core.Shard      `json:"shards"`
-		ShardResults map[string]core.RunResult  `json:"shard_results"`
-	}{s.nextID, s.targets, s.runs, s.searches, s.searchRun, s.shards, s.shardResults})
+		NextID          int                            `json:"next_id"`
+		Targets         map[string]core.Target         `json:"targets"`
+		Runs            map[string]core.Run            `json:"runs"`
+		Searches        map[string]core.AutoSearch     `json:"searches"`
+		SearchRun       map[string]string              `json:"search_run"`
+		Shards          map[string]core.Shard          `json:"shards"`
+		ShardResults    map[string]core.RunResult      `json:"shard_results"`
+		Captures        map[string]core.CaptureSession `json:"captures"`
+		CaptureSettings core.CaptureSettings           `json:"capture_settings"`
+	}{s.nextID, s.targets, s.runs, s.searches, s.searchRun, s.shards, s.shardResults, s.captures, s.captureSettings})
 }
 
 func (s *MemoryStore) Restore(data []byte) error {
 	var state struct {
-		NextID       int                        `json:"next_id"`
-		Targets      map[string]core.Target     `json:"targets"`
-		Runs         map[string]core.Run        `json:"runs"`
-		Searches     map[string]core.AutoSearch `json:"searches"`
-		SearchRun    map[string]string          `json:"search_run"`
-		Shards       map[string]core.Shard      `json:"shards"`
-		ShardResults map[string]core.RunResult  `json:"shard_results"`
+		NextID          int                            `json:"next_id"`
+		Targets         map[string]core.Target         `json:"targets"`
+		Runs            map[string]core.Run            `json:"runs"`
+		Searches        map[string]core.AutoSearch     `json:"searches"`
+		SearchRun       map[string]string              `json:"search_run"`
+		Shards          map[string]core.Shard          `json:"shards"`
+		ShardResults    map[string]core.RunResult      `json:"shard_results"`
+		Captures        map[string]core.CaptureSession `json:"captures"`
+		CaptureSettings core.CaptureSettings           `json:"capture_settings"`
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return err
@@ -98,6 +109,8 @@ func (s *MemoryStore) Restore(data []byte) error {
 	s.searchRun = state.SearchRun
 	s.shards = state.Shards
 	s.shardResults = state.ShardResults
+	s.captures = state.Captures
+	s.captureSettings = state.CaptureSettings
 	if s.targets == nil {
 		s.targets = map[string]core.Target{}
 	}
@@ -115,6 +128,9 @@ func (s *MemoryStore) Restore(data []byte) error {
 	}
 	if s.shardResults == nil {
 		s.shardResults = map[string]core.RunResult{}
+	}
+	if s.captures == nil {
+		s.captures = map[string]core.CaptureSession{}
 	}
 	if s.progress == nil {
 		s.progress = map[string]core.RunProgress{}
@@ -184,7 +200,87 @@ func (s *MemoryStore) Health() (int, int, bool) {
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{targets: map[string]core.Target{}, runs: map[string]core.Run{}, searches: map[string]core.AutoSearch{}, searchRun: map[string]string{}, shards: map[string]core.Shard{}, shardResults: map[string]core.RunResult{}, progress: map[string]core.RunProgress{}}
+	return &MemoryStore{targets: map[string]core.Target{}, runs: map[string]core.Run{}, searches: map[string]core.AutoSearch{}, searchRun: map[string]string{}, shards: map[string]core.Shard{}, shardResults: map[string]core.RunResult{}, captures: map[string]core.CaptureSession{}, progress: map[string]core.RunProgress{}}
+}
+
+func defaultCaptureSettings() core.CaptureSettings {
+	return core.CaptureSettings{Enabled: true, SessionIdleMinutes: 15, MaxEventsPerSession: 128, RetentionSessions: 100, DefaultReplayVUs: 30, ReplayThinkTimeScale: 1, ReplayBufferSeconds: 300, ReplayDrainSeconds: 120}
+}
+
+func (s *MemoryStore) GetCaptureSettings() core.CaptureSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	settings := s.captureSettings
+	if !settings.Configured {
+		defaults := defaultCaptureSettings()
+		defaults.Configured = false
+		return defaults
+	}
+	return settings
+}
+
+func (s *MemoryStore) SetCaptureSettings(settings core.CaptureSettings) core.CaptureSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings.Configured = true
+	s.captureSettings = settings
+	return settings
+}
+
+// RecordCapture stores only anonymous timing and token metadata. A bounded
+// history prevents a forgotten capture client from growing the snapshot forever.
+func (s *MemoryStore) RecordCapture(session core.CaptureSession, event core.CaptureEvent) core.CaptureSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings := s.captureSettings
+	if !settings.Configured {
+		settings = defaultCaptureSettings()
+	}
+	current, ok := s.captures[session.ID]
+	if ok && session.StartedUnixMillis-current.UpdatedUnixMillis > int64(settings.SessionIdleMinutes)*60*1000 {
+		session.ID = fmt.Sprintf("%s-%x", session.ID, session.StartedUnixMillis)
+		current, ok = s.captures[session.ID]
+	}
+	if !ok {
+		if len(s.captures) >= settings.RetentionSessions {
+			oldestID, oldest := "", int64(^uint64(0)>>1)
+			for id, item := range s.captures {
+				if item.UpdatedUnixMillis < oldest {
+					oldestID, oldest = id, item.UpdatedUnixMillis
+				}
+			}
+			delete(s.captures, oldestID)
+		}
+		current = session
+	}
+	if len(current.Events) < settings.MaxEventsPerSession {
+		event.TimestampMillis = session.StartedUnixMillis - current.StartedUnixMillis
+		current.Events = append(current.Events, event)
+	}
+	current.UpdatedUnixMillis = session.UpdatedUnixMillis
+	s.captures[current.ID] = current
+	return current
+}
+
+func (s *MemoryStore) ListCaptures() []core.CaptureSession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := make([]core.CaptureSession, 0, len(s.captures))
+	for _, item := range s.captures {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedUnixMillis > items[j].UpdatedUnixMillis })
+	return items
+}
+
+func (s *MemoryStore) DeleteCapture(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.captures[id]; !ok {
+		return false
+	}
+	delete(s.captures, id)
+	return true
 }
 
 func (s *MemoryStore) CreateSearch(config core.AutoSearchConfig) core.AutoSearch {

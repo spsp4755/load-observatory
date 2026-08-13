@@ -91,6 +91,14 @@ type RunConfig struct {
 	// which is why it is named "pad" rather than a target input length.
 	PromptPadTokens int `json:"prompt_pad_tokens,omitempty"`
 	PromptPadStdev  int `json:"prompt_pad_stdev,omitempty"`
+	// Trace replays a locally captured production schedule. The browser parses
+	// the file and sends only these events; the controller never fetches it.
+	Trace          []TraceEvent `json:"trace,omitempty"`
+	TraceTimeScale float64      `json:"trace_time_scale,omitempty"`
+	// SessionsPerVU limits how many complete agent jobs each virtual user starts.
+	// One reproduces "N developers each doing one long task"; zero keeps the
+	// historical behavior of repeating sessions for the full run duration.
+	SessionsPerVU int `json:"sessions_per_vu,omitempty"`
 }
 
 type ArrivalPattern string
@@ -114,12 +122,60 @@ type LoadStage struct {
 	TargetLoad      int `json:"target_load"`
 }
 
+type TraceEvent struct {
+	TimestampMillis int64  `json:"timestamp_ms"`
+	Name            string `json:"name,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	PromptTokens    int    `json:"prompt_tokens,omitempty"`
+	MaxTokens       int    `json:"max_tokens,omitempty"`
+}
+
 type ScenarioTask struct {
 	Name            string `json:"name"`
 	Prompt          string `json:"prompt"`
 	Weight          int    `json:"weight"`
 	ThinkTimeMillis int    `json:"think_time_millis,omitempty"`
 	MaxTokens       int    `json:"max_tokens,omitempty"`
+	// PromptTokens is the approximate total input size for this turn, including
+	// accumulated history. It is used by anonymized captures that deliberately
+	// do not retain source files or prompts.
+	PromptTokens int `json:"prompt_tokens,omitempty"`
+}
+
+type CaptureEvent struct {
+	TimestampMillis int64  `json:"timestamp_ms"`
+	PromptTokens    int    `json:"prompt_tokens"`
+	MaxTokens       int    `json:"max_tokens"`
+	OutputTokens    int    `json:"output_tokens,omitempty"`
+	ToolCalls       int    `json:"tool_calls,omitempty"`
+	FinishReason    string `json:"finish_reason,omitempty"`
+	LatencyMillis   int64  `json:"latency_ms,omitempty"`
+	TTFTMillis      int64  `json:"ttft_ms,omitempty"`
+	StatusCode      int    `json:"status_code,omitempty"`
+}
+
+type CaptureSession struct {
+	ID                string         `json:"id"`
+	TargetID          string         `json:"target_id"`
+	Client            string         `json:"client"`
+	StartedUnixMillis int64          `json:"started_unix_ms"`
+	UpdatedUnixMillis int64          `json:"updated_unix_ms"`
+	Events            []CaptureEvent `json:"events"`
+}
+
+// CaptureSettings controls the privacy-preserving proxy. TokenHash is never
+// returned by the human API; only its presence is exposed.
+type CaptureSettings struct {
+	Configured           bool    `json:"configured"`
+	Enabled              bool    `json:"enabled"`
+	TokenHash            string  `json:"token_hash,omitempty"`
+	SessionIdleMinutes   int     `json:"session_idle_minutes"`
+	MaxEventsPerSession  int     `json:"max_events_per_session"`
+	RetentionSessions    int     `json:"retention_sessions"`
+	DefaultReplayVUs     int     `json:"default_replay_vus"`
+	ReplayThinkTimeScale float64 `json:"replay_think_time_scale"`
+	ReplayBufferSeconds  int     `json:"replay_buffer_seconds"`
+	ReplayDrainSeconds   int     `json:"replay_drain_seconds"`
 }
 
 type UserJourney struct {
@@ -231,6 +287,7 @@ type RunResult struct {
 	GuardrailMessage   string           `json:"guardrail_message,omitempty"`
 	AgentSessions      int64            `json:"agent_sessions,omitempty"`
 	CompletedSessions  int64            `json:"completed_sessions,omitempty"`
+	SessionDuration    Distribution     `json:"session_duration,omitempty"`
 	StatusCounts       map[string]int64 `json:"status_counts"`
 	Errors             []string         `json:"errors"`
 	Timeline           []TimelinePoint  `json:"timeline"`

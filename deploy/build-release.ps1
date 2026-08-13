@@ -1,7 +1,9 @@
 param(
-  [string]$Version = 'v0.1.0',
+  [string]$Version = 'v0.4.0',
   [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\release'),
-  [ValidateSet('podman', 'docker')][string]$Engine = 'podman'
+  [ValidateSet('podman', 'docker')][string]$Engine = 'podman',
+  [string]$Registry = 'harbor.kubagents-ofc.koreacb.com',
+  [string]$HostName = 'load-observatory.kubagents-ofc.koreacb.com'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,11 +32,20 @@ Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path (Join-Path $bundle 'images') -Force | Out-Null
 Copy-Item (Join-Path $root 'deploy') (Join-Path $bundle 'deploy') -Recurse
 
+# The checked-in manifest already uses the selected hostname. Fail closed if a
+# caller asks for another one without updating all OIDC/Ingress references.
+$manifest = Get-Content -Raw (Join-Path $root 'deploy/k8s.yaml')
+if ($manifest -notmatch [regex]::Escape($HostName)) { throw "deploy/k8s.yaml does not contain host $HostName" }
+
 foreach ($image in $images) {
   if ($image.Dockerfile) {
     Invoke-ContainerEngine build --platform linux/amd64 -f (Join-Path $root $image.Dockerfile) -t $image.Tag $root
   } else {
     Invoke-ContainerEngine pull --platform linux/amd64 $image.Tag
+  }
+  $platform = (& $Engine image inspect --format '{{.Os}}/{{.Architecture}}' $image.Tag).Trim()
+  if ($LASTEXITCODE -ne 0 -or $platform -ne 'linux/amd64') {
+    throw "Expected linux/amd64 image for $($image.Tag), got '$platform'"
   }
   $tarPath = Join-Path $bundle "images/$($image.Name).tar"
   Invoke-ContainerEngine save --output $tarPath $image.Tag
@@ -49,18 +60,38 @@ foreach ($image in $images) {
   Remove-Item -LiteralPath $tarPath
 }
 
-@"
+function Write-Utf8NoBom {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Content)
+  [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'deploy/render-offline-manifest.ps1') `
+  -Registry $Registry -Version $Version -OutputPath (Join-Path $bundle 'k8s-harbor.yaml')
+
+$bundleReadme = @"
 # Load Observatory $Version (linux/amd64 / x86_64)
 
 This archive contains gzip-compressed OCI image archives (images/*.tar.gz).
 Load them directly on the disconnected deployment host with Podman - no
 separate decompression step needed, e.g. ``podman load -i images/controller.tar.gz`` -
 then follow `deploy/offline-deploy.md`.
-"@ | Set-Content -LiteralPath (Join-Path $bundle 'README.md') -NoNewline
 
-Get-ChildItem -LiteralPath (Join-Path $bundle 'images') -Filter '*.tar.gz' | ForEach-Object {
+Deployment defaults:
+- Namespace: load-observatory
+- Harbor: $Registry/load-observatory
+- URL: https://$HostName
+- Manifest: k8s-harbor.yaml
+"@
+Write-Utf8NoBom -Path (Join-Path $bundle 'README.md') -Content $bundleReadme
+
+$imageChecksums = Get-ChildItem -LiteralPath (Join-Path $bundle 'images') -Filter '*.tar.gz' | ForEach-Object {
   Get-FileHash -Algorithm SHA256 $_.FullName
-} | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content -LiteralPath (Join-Path $bundle 'SHA256SUMS')
+} | ForEach-Object { "$($_.Hash.ToLower())  images/$($_.Path | Split-Path -Leaf)" }
+Write-Utf8NoBom -Path (Join-Path $bundle 'SHA256SUMS') -Content (($imageChecksums -join "`n") + "`n")
 
 tar -czf $archive -C $OutputDirectory (Split-Path $bundle -Leaf)
+if ($LASTEXITCODE -ne 0) { throw "Failed to create $archive" }
+$archiveHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+Write-Utf8NoBom -Path "$archive.sha256" -Content "$archiveHash  $(Split-Path $archive -Leaf)`n"
 Write-Host "Created $archive"
+Write-Host "Created $archive.sha256"

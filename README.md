@@ -82,6 +82,10 @@ percentile은 선형 통계가 아니어서 샤드별 P95로 전체 P95를 계�
 - **출력 길이 편차**: `max_tokens`를 요청마다 흔듭니다. 서버가 `max_tokens`를 지키므로 정확합니다.
 - **프롬프트 추가 길이**: 입력 길이 분포를 만듭니다. 토크나이저를 반입하지 않으므로 문자 수 기준 **근사값**입니다.
 
+### 실제 트래픽 트레이스 재생
+
+JSON 배열·JSONL로 반입한 요청 시각과 입력·출력 길이를 기존 Go Agent가 그대로 재생합니다. `timestamp_ms`, `prompt_tokens`, `max_tokens`, 선택적 `name`·`prompt`를 지원하며 GuideLLM 형식의 `timestamp`, `input_length`, `output_length`도 읽습니다. 원래 속도 또는 배속으로 실행하고, 최대 진행 요청을 넘긴 도착은 `dropped_arrivals`로 집계합니다. 트레이스 파일은 브라우저에서 읽어 내부 Controller에만 전달되며 외부 도구·Hub·CDN을 사용하지 않습니다. 상세 형식과 민감정보 지침은 [docs/trace-replay.md](docs/trace-replay.md)를 참고하세요.
+
 ### 결과 내보내기
 
 `GET /api/runs/{id}/export.json`과 `export.csv` (화면에서도 버튼 제공). 숫자만이 아니라 **판정과 측정 조건을 함께** 담으므로 보고서에 첨부하면 읽는 사람이 숫자의 유효성을 판단할 수 있습니다. CSV는 `section,key,subkey,value` long format입니다.
@@ -139,6 +143,14 @@ kubectl apply -f deploy/k8s.yaml
 Kubernetes 배포에서는 Controller가 `postgres-credentials` Secret의 `DATABASE_URL`을 사용해 실행 기록·등록 모델을 PostgreSQL에 영속화합니다. 배포 전에 `POSTGRES_PASSWORD`와 `DATABASE_URL`의 비밀번호를 함께 교체해야 합니다. 로컬에서 `DATABASE_URL`을 지정하지 않은 경우에만 메모리 저장소를 사용합니다.
 
 등록 모델의 인증키는 PostgreSQL 스냅샷에 AES-GCM으로 암호화해 저장합니다. 배포 전에 `TARGET_API_KEY_ENCRYPTION_KEY`에 아래처럼 생성한 Base64 32바이트 키를 설정해야 합니다. 이 값이 없거나 형식이 틀리면 Controller는 시작하지 않습니다.
+
+### 실제 Qwen Code / OpenCode 세션 재생
+
+UI **실사용 캡처** 탭에서 캡처 토큰을 생성·저장하고 프록시를 활성화하면 `/capture/<등록 모델 ID>/v1/chat/completions`가 OpenAI 호환 캡처 프록시로 열립니다. `CAPTURE_PROXY_TOKEN` 환경변수는 최초 배포용 선택 사항이며 UI에서 안전하게 교체할 수 있습니다. 토큰은 SHA-256 해시로만 저장되어 저장 후 다시 표시되지 않습니다. 같은 화면에서 Qwen Code/OpenCode의 `baseURL`, 세션 UUID와 클라이언트 헤더를 생성·복사할 수 있습니다.
+
+세션 유휴 분리 시간, 세션당 최대 호출 수, 보관 개수, 기본 VU, 도구 대기시간 배율, 실행 여유와 종료 유예도 UI에서 관리합니다. 고정된 `X-Load-Observatory-Session` 값을 사용하더라도 설정한 유휴 시간이 지나면 새로운 개발 작업으로 자동 분리됩니다.
+
+캡처 저장소에는 프롬프트, 응답, 원본 세션 ID, 캡처 토큰, 모델 API 키가 남지 않습니다. 모델이 보고한 입력·출력 토큰 수와 호출 간격, 지연, TTFT, 도구 호출 메타데이터만 저장됩니다. 캡처를 테스트 설정으로 적용하면 각 VU가 한 명의 개발자처럼 해당 다중 호출 작업을 한 번 수행하고, 호출 사이의 도구 작업 대기와 누적 컨텍스트 크기를 재현합니다.
 
 ```powershell
 $key = New-Object byte[] 32

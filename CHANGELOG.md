@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.0
+
+- Qwen Code/OpenCode의 OpenAI 호환 요청을 익명 캡처하는 프록시와 세션 단위 trace replay를 추가했습니다.
+- 동시 사용자의 파일 읽기·검색·코드 수정·테스트 반복을 재현하는 agent workload와 단계별 토큰/think time 설정 UI를 추가했습니다.
+- 캡처 토큰을 UI에서 발급·교체하고 해시만 PostgreSQL에 저장하도록 했습니다.
+- 실행 결과에 workload 구성, 시나리오별 지표, 안정 용량 근거와 비교 정보를 보강했습니다.
+- linux/amd64 폐쇄망 번들에 고정 버전 이미지 7개, Harbor 렌더링 매니페스트, Podman load/push 스크립트 및 SHA-256 체크섬을 포함합니다.
+- Kubernetes 배포에 비루트 실행, health probe, resource requests/limits, Harbor imagePullSecret 연결을 추가했습니다.
+
 ## v0.3.2
 
 - 릴리스 이미지 아카이브를 gzip 압축 상태(`images/*.tar.gz`)로 배포 — `podman load`가 압축 해제 없이 바로 읽으므로, 폐쇄망 반입 후 개별 이미지를 따로 풀 필요가 없어짐(번들 전체는 여전히 한 번 풀어야 함). 대상 아키텍처는 x86_64(linux/amd64).

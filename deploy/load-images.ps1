@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory)] [string]$ArchiveDirectory,
   [Parameter(Mandatory)] [string]$Registry,
-  [string]$Version = 'latest'
+  [string]$Version = 'v0.4.0'
 )
 
 $ErrorActionPreference = 'Stop'

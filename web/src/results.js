@@ -80,9 +80,13 @@ export function workloadDifferences(left, right) {
     ["출력 길이 고정", left?.result?.output_length_pinned, right?.result?.output_length_pinned],
     ["대화 이력 누적", left?.result?.context_accumulated, right?.result?.context_accumulated],
     ["최대 출력 토큰", left?.config?.max_tokens, right?.config?.max_tokens],
+    ["트레이스 재생 속도", left?.config?.trace_time_scale || 1, right?.config?.trace_time_scale || 1],
   ];
   for (const [label, a, b] of pairs) {
     if (String(a) !== String(b)) differences.push(`${label}: ${a} ↔ ${b}`);
+  }
+  if (JSON.stringify(left?.config?.trace || []) !== JSON.stringify(right?.config?.trace || [])) {
+    differences.push("트레이스 내용: 다름");
   }
   return differences;
 }

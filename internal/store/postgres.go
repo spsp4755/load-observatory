@@ -139,6 +139,27 @@ func (s *PostgresStore) CancelSearch(v string) (core.AutoSearch, bool) {
 	return r, ok
 }
 func (s *PostgresStore) AdvanceSearch(v string) { s.memory.AdvanceSearch(v); s.persist() }
+func (s *PostgresStore) RecordCapture(v core.CaptureSession, event core.CaptureEvent) core.CaptureSession {
+	r := s.memory.RecordCapture(v, event)
+	s.persist()
+	return r
+}
+func (s *PostgresStore) ListCaptures() []core.CaptureSession { return s.memory.ListCaptures() }
+func (s *PostgresStore) DeleteCapture(id string) bool {
+	ok := s.memory.DeleteCapture(id)
+	if ok {
+		s.persist()
+	}
+	return ok
+}
+func (s *PostgresStore) GetCaptureSettings() core.CaptureSettings {
+	return s.memory.GetCaptureSettings()
+}
+func (s *PostgresStore) SetCaptureSettings(v core.CaptureSettings) core.CaptureSettings {
+	r := s.memory.SetCaptureSettings(v)
+	s.persist()
+	return r
+}
 
 var _ Store = (*PostgresStore)(nil)
 var _ = fmt.Sprintf

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cancelRun, checkTarget, createRun, listTargets } from "../src/api.js";
+import { cancelRun, checkTarget, createRun, listTargets, updateCaptureSettings } from "../src/api.js";
 
 test("createRun posts the selected VU configuration", async () => {
   const originalFetch = global.fetch;
@@ -49,5 +49,20 @@ test("checkTarget posts only the selected target check endpoint", async () => {
   assert.equal((await checkTarget("target-1")).ok, true);
   assert.equal(request.url, "/api/targets/target-1/check");
   assert.equal(request.options.method, "POST");
+  global.fetch = originalFetch;
+});
+
+test("capture settings are saved through the authenticated human API", async () => {
+  const originalFetch = global.fetch;
+  let request;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ enabled: true, token_configured: true }), { status: 200 });
+  };
+  const result = await updateCaptureSettings({ enabled: true, token: "generated-secret" });
+  assert.equal(request.url, "/api/capture-settings");
+  assert.equal(request.options.method, "PUT");
+  assert.equal(JSON.parse(request.options.body).token, "generated-secret");
+  assert.equal(result.token_configured, true);
   global.fetch = originalFetch;
 });

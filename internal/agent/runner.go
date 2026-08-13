@@ -320,7 +320,9 @@ func runStage(runCtx context.Context, client *http.Client, target core.Target, c
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if config.Mode == core.LoadModeRPS {
+		if len(config.Trace) > 0 {
+			runTrace(issueCtx, requestCtx, client, target, config, m)
+		} else if config.Mode == core.LoadModeRPS {
 			runRPS(issueCtx, requestCtx, client, target, config, m)
 		} else {
 			runVUs(issueCtx, requestCtx, client, target, config, m)
@@ -401,6 +403,70 @@ func runRPS(issueCtx, requestCtx context.Context, client *http.Client, target co
 		}()
 	}
 }
+
+func runTrace(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
+	if len(config.Trace) == 0 {
+		return
+	}
+	scale := config.TraceTimeScale
+	if scale <= 0 {
+		scale = 1
+	}
+	limit := config.MaxInFlight
+	if limit == 0 {
+		limit = core.MaxVUs
+	}
+	inFlight := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	started := time.Now()
+	traceStart := config.Trace[0].TimestampMillis
+	for _, event := range config.Trace {
+		offset := time.Duration(float64(event.TimestampMillis-traceStart) / scale * float64(time.Millisecond))
+		dueAt := started.Add(offset)
+		select {
+		case <-issueCtx.Done():
+			wg.Wait()
+			return
+		case <-time.After(time.Until(dueAt)):
+		}
+		select {
+		case inFlight <- struct{}{}:
+		default:
+			m.recordDropped()
+			continue
+		}
+		eventConfig := config
+		eventConfig.Trace = nil
+		eventConfig.Journeys = nil
+		eventConfig.AgentWorkflow = false
+		prompt := event.Prompt
+		if prompt == "" {
+			prompt = config.Prompt
+		}
+		name := event.Name
+		if name == "" {
+			name = "trace"
+		}
+		maxTokens := event.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = config.MaxTokens
+		}
+		eventConfig.Scenario = []core.ScenarioTask{{Name: name, Prompt: prompt, Weight: 1, MaxTokens: maxTokens}}
+		eventConfig.PromptPadTokens = 0
+		if event.PromptTokens > 0 {
+			eventConfig.PromptPadTokens = max(0, event.PromptTokens-len(prompt)/charsPerToken)
+		}
+		scheduled := dueAt
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-inFlight }()
+			runJourney(issueCtx, requestCtx, client, target, eventConfig, m, scheduled)
+		}()
+	}
+	wg.Wait()
+}
+
 func runWorker(issueCtx, requestCtx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements) {
 	if len(config.Journeys) > 0 {
 		for issueCtx.Err() == nil {
@@ -409,13 +475,13 @@ func runWorker(issueCtx, requestCtx context.Context, client *http.Client, target
 		return
 	}
 	if config.AgentWorkflow {
-		for issueCtx.Err() == nil {
+		for sessions := 0; issueCtx.Err() == nil && (config.SessionsPerVU == 0 || sessions < config.SessionsPerVU); sessions++ {
 			runAgentSession(issueCtx, requestCtx, client, target, config, m, time.Now())
 		}
 		return
 	}
 	for issueCtx.Err() == nil {
-		wait, _ := doRequest(requestCtx, client, target, config, m, nil, time.Now())
+		wait, _, _ := doRequest(requestCtx, client, target, config, m, nil, time.Now())
 		m.think(issueCtx, wait)
 	}
 }
@@ -437,7 +503,7 @@ func runJourney(issueCtx, requestCtx context.Context, client *http.Client, targe
 		runAgentSession(issueCtx, requestCtx, client, target, journeyConfig, m, scheduled)
 		return
 	}
-	wait, _ := doRequest(requestCtx, client, target, journeyConfig, m, nil, scheduled)
+	wait, _, _ := doRequest(requestCtx, client, target, journeyConfig, m, nil, scheduled)
 	m.think(issueCtx, wait)
 }
 
@@ -446,12 +512,12 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 		return
 	}
 	m.startSession()
-	before := m.successCount()
+	completed := true
 	// A real chat or agent session carries every prior turn, so the prompt grows
 	// each turn. That growth is the dominant driver of KV cache pressure and of
 	// TTFT growth, so a session that does not accumulate under-states both.
 	var history []chatMessage
-	for _, task := range config.Scenario {
+	for index, task := range config.Scenario {
 		if issueCtx.Err() != nil {
 			return
 		}
@@ -463,7 +529,20 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 		if task.MaxTokens > 0 {
 			step.MaxTokens = task.MaxTokens
 		}
-		wait, answer := doRequest(requestCtx, client, target, step, m, history, scheduled)
+		if task.PromptTokens > 0 {
+			historyChars := 0
+			for _, message := range history {
+				historyChars += len(message.Content)
+			}
+			step.PromptPadTokens = max(0, task.PromptTokens-(historyChars+len(task.Prompt))/charsPerToken)
+			step.PromptPadStdev = 0
+		}
+		stepScheduled := scheduled
+		if index > 0 {
+			stepScheduled = time.Now()
+		}
+		wait, answer, succeeded := doRequest(requestCtx, client, target, step, m, history, stepScheduled)
+		completed = completed && succeeded
 		if config.AccumulateContext {
 			history = append(history,
 				chatMessage{Role: "user", Content: task.Prompt},
@@ -477,7 +556,7 @@ func runAgentSession(issueCtx, requestCtx context.Context, client *http.Client, 
 			return
 		}
 	}
-	m.completeSession(m.successCount()-before == int64(len(config.Scenario)))
+	m.completeSession(completed)
 }
 
 // backoffBeforeAttempt holds a new attempt back when the target has been
@@ -518,10 +597,10 @@ func backoffDelay(consecutiveFailures int64) time.Duration {
 	return delay/2 + time.Duration(rand.Int63n(int64(delay/2)+1))
 }
 
-func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, history []chatMessage, scheduled time.Time) (time.Duration, string) {
+func doRequest(ctx context.Context, client *http.Client, target core.Target, config core.RunConfig, m *measurements, history []chatMessage, scheduled time.Time) (time.Duration, string, bool) {
 	m.backoffBeforeAttempt(ctx)
 	if ctx.Err() != nil {
-		return 0, ""
+		return 0, "", false
 	}
 	sequence, varied, name, prompt, think, maxTokens := m.nextWorkload(config)
 	call := m.beginAttempt(name, scheduled)
@@ -550,14 +629,14 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		payload, err := json.Marshal(request)
 		if err != nil {
 			m.recordTransportError(call, "encode request")
-			return 0, ""
+			return 0, "", false
 		}
 		body = bytes.NewReader(payload)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		m.recordTransportError(call, "create request")
-		return 0, ""
+		return 0, "", false
 	}
 	if method == http.MethodPost {
 		request.Header.Set("Content-Type", "application/json")
@@ -568,7 +647,7 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	response, err := client.Do(request)
 	if err != nil {
 		m.recordAborted(call, ctx, err)
-		return 0, ""
+		return 0, "", false
 	}
 	timing := modelTiming{ttft: time.Since(call.startedAt).Milliseconds()}
 	usage := core.TokenUsage{}
@@ -577,7 +656,7 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 		if err != nil {
 			_ = response.Body.Close()
 			m.recordAborted(call, ctx, err)
-			return 0, ""
+			return 0, "", false
 		}
 	} else {
 		_, _ = io.Copy(io.Discard, response.Body)
@@ -586,10 +665,10 @@ func doRequest(ctx context.Context, client *http.Client, target core.Target, con
 	latency := time.Since(call.scheduledAt).Milliseconds()
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
 		m.recordHTTPFailure(call, latency, response.StatusCode, "HTTP "+response.Status)
-		return 0, ""
+		return 0, "", false
 	}
 	m.recordSuccess(call, latency, timing, response.StatusCode, usage, config)
-	return think, timing.answer
+	return think, timing.answer, true
 }
 
 func readModelResponse(response *http.Response, started time.Time) (modelTiming, core.TokenUsage, error) {

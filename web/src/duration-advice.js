@@ -86,6 +86,15 @@ export function estimateWorkload({
 // workloadShape derives the output budget and call count one virtual user gets
 // through per cycle, which is what turns a token budget into a time estimate.
 export function workloadShape(form = {}) {
+  const trace = form.trace || [];
+  if (trace.length) {
+    return {
+      callsPerUser: 1,
+      outputBudget: Math.max(
+        ...trace.map((event) => Number(event.max_tokens || form.maxTokens || 0)),
+      ),
+    };
+  }
   const scenario = form.scenario || [];
   const journeys = form.journeys || [];
   const tasks = [...scenario, ...journeys.flatMap((journey) => journey.scenario || [])];

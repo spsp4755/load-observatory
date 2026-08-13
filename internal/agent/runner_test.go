@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,47 @@ func TestRunCountsSuccessfulRequests(t *testing.T) {
 	result := Run(context.Background(), target.URL, core.RunConfig{Mode: core.LoadModeVU, VUs: 1, DurationSeconds: 1})
 	if result.Successes == 0 {
 		t.Fatal("no request succeeded")
+	}
+}
+
+func TestTraceReplayUsesEventScheduleAndPayload(t *testing.T) {
+	started := time.Now()
+	type observed struct {
+		at        time.Duration
+		prompt    string
+		maxTokens int
+	}
+	requests := make(chan observed, 2)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+			MaxTokens int `json:"max_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		requests <- observed{at: time.Since(started), prompt: payload.Messages[0].Content, maxTokens: payload.MaxTokens}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":8,"completion_tokens":4}}`))
+	}))
+	defer target.Close()
+
+	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{
+		Mode: core.LoadModeRPS, RPS: 1, DurationSeconds: 1, DrainSeconds: 1, MaxTokens: 32,
+		Trace:          []core.TraceEvent{{TimestampMillis: 0, Name: "first", Prompt: "first prompt", MaxTokens: 7}, {TimestampMillis: 120, Name: "second", Prompt: "second prompt", MaxTokens: 9}},
+		TraceTimeScale: 1,
+	})
+	first, second := <-requests, <-requests
+	if first.prompt != "first prompt" || first.maxTokens != 7 || second.prompt != "second prompt" || second.maxTokens != 9 {
+		t.Fatalf("trace payloads not replayed: first=%+v second=%+v", first, second)
+	}
+	if gap := second.at - first.at; gap < 80*time.Millisecond || gap > 350*time.Millisecond {
+		t.Fatalf("trace gap = %s, want about 120ms", gap)
+	}
+	if result.Issued != 2 || result.Completed != 2 {
+		t.Fatalf("trace lifecycle = issued %d completed %d", result.Issued, result.Completed)
 	}
 }
 
@@ -204,6 +246,23 @@ func TestRunTargetCompletesAgentSessionsInSequence(t *testing.T) {
 	defer mu.Unlock()
 	if result.AgentSessions == 0 || result.CompletedSessions == 0 || len(prompts) < 2 || prompts[0] != "tool: searched files" || prompts[1] != "tool: patch applied" {
 		t.Fatalf("agent workflow not sequential: result=%+v prompts=%v", result, prompts)
+	}
+}
+
+func TestRunTargetRunsOneCapturedJobPerVirtualUser(t *testing.T) {
+	var calls int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&calls, 1)
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1200,"completion_tokens":20}}`))
+	}))
+	defer target.Close()
+	result := RunTarget(context.Background(), core.Target{Type: core.TargetTypeModel, URL: target.URL, Model: "model"}, core.RunConfig{
+		Mode: core.LoadModeVU, VUs: 3, DurationSeconds: 5, MaxTokens: 64,
+		AgentWorkflow: true, SessionsPerVU: 1, AccumulateContext: true,
+		Scenario: []core.ScenarioTask{{Name: "search", Prompt: "inspect repository", Weight: 1, PromptTokens: 1200}, {Name: "edit", Prompt: "implement change", Weight: 1, PromptTokens: 2400}},
+	})
+	if calls != 6 || result.AgentSessions != 3 || result.CompletedSessions != 3 {
+		t.Fatalf("expected 3 two-turn jobs, calls=%d result=%+v", calls, result)
 	}
 }
 

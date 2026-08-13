@@ -35,3 +35,16 @@ func TestCompleteShardWaitsForAllShardResults(t *testing.T) {
 	}
 	_ = run
 }
+
+func TestCaptureSettingsSplitAnIdleClientIntoANewJob(t *testing.T) {
+	s := NewMemoryStore()
+	s.SetCaptureSettings(core.CaptureSettings{Enabled: true, SessionIdleMinutes: 5, MaxEventsPerSession: 64, RetentionSessions: 20, DefaultReplayVUs: 30, ReplayThinkTimeScale: 1, ReplayBufferSeconds: 300, ReplayDrainSeconds: 120})
+	first := core.CaptureSession{ID: "capture-client", TargetID: "target-1", StartedUnixMillis: 1_000, UpdatedUnixMillis: 2_000}
+	s.RecordCapture(first, core.CaptureEvent{PromptTokens: 100})
+	second := core.CaptureSession{ID: "capture-client", TargetID: "target-1", StartedUnixMillis: 400_000, UpdatedUnixMillis: 401_000}
+	s.RecordCapture(second, core.CaptureEvent{PromptTokens: 200})
+	captures := s.ListCaptures()
+	if len(captures) != 2 || captures[0].Events[0].PromptTokens != 200 || captures[1].Events[0].PromptTokens != 100 {
+		t.Fatalf("idle client was not split into two jobs: %#v", captures)
+	}
+}

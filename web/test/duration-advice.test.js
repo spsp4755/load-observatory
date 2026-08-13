@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateWorkload, formatSeconds } from "../src/duration-advice.js";
+import { estimateWorkload, formatSeconds, workloadShape } from "../src/duration-advice.js";
 
 test("a 60 second run cannot finish one 20480 token response", () => {
   const advice = estimateWorkload({ outputBudget: 20480, tokensPerSecond: 110, durationSeconds: 60, steadyStateSeconds: 12, drainSeconds: 12 });
@@ -63,4 +63,16 @@ test("an unpinned output length makes every time estimate an upper bound only", 
   assert.equal(pinned.upperBoundOnly, false);
   assert.doesNotMatch(pinned.message, /상한/);
   assert.equal(pinned.secondsPerUserCycle, unpinned.secondsPerUserCycle, "the estimate itself is unchanged, only its confidence");
+});
+
+test("trace replay estimates use the largest event budget instead of the stale form budget", () => {
+  const shape = workloadShape({
+    maxTokens: "130000",
+    trace: [
+      { max_tokens: 1024 },
+      { max_tokens: 4096 },
+      { max_tokens: 2048 },
+    ],
+  });
+  assert.deepEqual(shape, { callsPerUser: 1, outputBudget: 4096 });
 });

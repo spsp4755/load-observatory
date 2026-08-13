@@ -35,6 +35,20 @@ func TestValidateRunConfigAcceptsOneMillionModelTokens(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfigAcceptsOrderedTraceReplay(t *testing.T) {
+	err := ValidateRunConfig(RunConfig{Mode: LoadModeRPS, RPS: 1, DurationSeconds: 5, MaxTokens: 32, TraceTimeScale: 2, Trace: []TraceEvent{{TimestampMillis: 0, PromptTokens: 32, MaxTokens: 8}, {TimestampMillis: 1000, Prompt: "real request", MaxTokens: 16}}})
+	if err != nil {
+		t.Fatalf("valid trace rejected: %v", err)
+	}
+}
+
+func TestValidateRunConfigRejectsUnorderedTraceReplay(t *testing.T) {
+	err := ValidateRunConfig(RunConfig{Mode: LoadModeRPS, RPS: 1, DurationSeconds: 5, MaxTokens: 32, Trace: []TraceEvent{{TimestampMillis: 1000}, {TimestampMillis: 500}}})
+	if err == nil {
+		t.Fatal("unordered trace accepted")
+	}
+}
+
 func TestValidateRunConfigRejectsUnknownCachePolicy(t *testing.T) {
 	err := ValidateRunConfig(RunConfig{Mode: LoadModeVU, VUs: 1, DurationSeconds: 1, MaxTokens: 1, CachePolicy: "unknown"})
 	if err == nil {
@@ -44,5 +58,7 @@ func TestValidateRunConfigRejectsUnknownCachePolicy(t *testing.T) {
 
 func TestValidateRunConfigAcceptsWeightedScenarioAndStages(t *testing.T) {
 	err := ValidateRunConfig(RunConfig{Mode: LoadModeRPS, RPS: 10, DurationSeconds: 5, MaxTokens: 1, MaxInFlight: 3, WarmupRequests: 2, CooldownSeconds: 1, Stages: []LoadStage{{DurationSeconds: 2, TargetLoad: 5}}, Scenario: []ScenarioTask{{Name: "coding", Prompt: "write code", Weight: 3, ThinkTimeMillis: 10}}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 }

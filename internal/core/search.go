@@ -9,6 +9,9 @@ func ValidateAutoSearchConfig(config AutoSearchConfig) error {
 	if err := ValidateRunConfig(config.Run); err != nil {
 		return err
 	}
+	if len(config.Run.Trace) > 0 {
+		return fmt.Errorf("trace replay cannot be used for automatic capacity search")
+	}
 	load := config.StartLoad
 	if load < 1 || config.MaxLoad < load {
 		return fmt.Errorf("start_load must be between 1 and max_load")

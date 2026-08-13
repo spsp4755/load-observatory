@@ -6,14 +6,18 @@ import {
   createRun,
   createSearch,
   createTarget,
+  deleteCapture,
   deleteTarget,
   getHealth,
+  getCaptureSettings,
   getSession,
   logout,
   getRun,
   getSearch,
   listRuns,
+  listCaptures,
   listTargets,
+  updateCaptureSettings,
 } from "./api.js";
 import { compareRuns, policyText, presets } from "./record-utils.js";
 import { loadSavedValue, saveValue } from "./form-storage.js";
@@ -40,6 +44,8 @@ import {
   formatSeconds,
   workloadShape,
 } from "./duration-advice.js";
+import { parseTraceReplay, traceDurationSeconds } from "./trace-replay.js";
+import { captureStats, captureToWorkload } from "./capture-workload.js";
 
 const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   type: "model",
@@ -65,6 +71,8 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   outputTokensStdev: "0",
   promptPadTokens: "0",
   promptPadStdev: "0",
+  trace: [],
+  traceTimeScale: "1",
   tokensPerSecond: String(defaultTokensPerSecond),
   maxErrorPercent: "2",
   maxP95Millis: "2000",
@@ -79,6 +87,7 @@ const initial = loadSavedValue(window.localStorage, "load-observatory-form", {
   scenario: [],
   startLoad: "5",
   maxLoad: "40",
+  sessionsPerVU: "0",
 });
 const emptyProfile = {
   name: "",
@@ -94,7 +103,9 @@ const Metric = ({ label, value }) => (
   </section>
 );
 const loadText = (run) =>
-  run.config.mode === "rps" ? `${run.config.rps} RPS` : `${run.config.vus} VU`;
+  run.config.trace?.length
+    ? `${run.config.trace.length.toLocaleString()}건 트레이스`
+    : run.config.mode === "rps" ? `${run.config.rps} RPS` : `${run.config.vus} VU`;
 const agentWorkflowTemplate = [
   { name: "파일 검색", weight: 1, max_tokens: 1280, think_time_millis: 800, prompt: "개발 작업: HTTP 엔드포인트 오류를 조사하세요.\n\n도구 결과 — 파일 검색:\ninternal/api/handler.go\ninternal/api/handler_test.go\n\n관련 파일을 읽고 수정 계획을 작성하세요." },
   { name: "코드 수정", weight: 1, max_tokens: 20480, think_time_millis: 1200, prompt: "도구 결과 — 코드 변경 준비:\nhandler.go의 입력 검증 누락을 찾았습니다.\n\n앞선 조사 결과를 반영해 production-ready Go 수정안을 작성하세요." },
@@ -865,11 +876,40 @@ function Details({ run, onCancel }) {
 }
 
 function ScenarioControls({ form, setForm, advice, applyAdvice }) {
-  const applyAgentWorkflow = () => setForm((current) => recommendWorkload("agent", current));
-  const applySimpleProfile = () => setForm((current) => recommendWorkload("simple", current));
-  const applyRAGProfile = () => setForm((current) => recommendWorkload("rag", current));
-  const applyLongAgentProfile = () => setForm((current) => recommendWorkload("long-agent", current));
-  const applyMixedProfile = () => setForm((current) => recommendWorkload("mixed", current));
+  const [traceError, setTraceError] = useState("");
+  const applyProfile = (kind) => setForm((current) => ({ ...recommendWorkload(kind, current), trace: [] }));
+  const applyAgentWorkflow = () => applyProfile("agent");
+  const applySimpleProfile = () => applyProfile("simple");
+  const applyRAGProfile = () => applyProfile("rag");
+  const applyLongAgentProfile = () => applyProfile("long-agent");
+  const applyMixedProfile = () => applyProfile("mixed");
+  const importTrace = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const trace = parseTraceReplay(await file.text());
+      const traceTimeScale = Number(form.traceTimeScale) > 0 ? form.traceTimeScale : "1";
+      setForm((current) => ({
+        ...current,
+        mode: "rps",
+        rps: "1",
+        shards: "1",
+        stages: [],
+        scenario: [],
+        journeys: [],
+        agentWorkflow: false,
+        warmupRequests: "0",
+        steadyStateSeconds: "0",
+        trace,
+        traceTimeScale,
+        duration: String(traceDurationSeconds(trace, traceTimeScale)),
+      }));
+      setTraceError("");
+    } catch (error) {
+      setTraceError(error.message);
+      event.target.value = "";
+    }
+  };
   const addScenario = () =>
     setForm((current) => ({
       ...current,
@@ -917,10 +957,14 @@ function ScenarioControls({ form, setForm, advice, applyAdvice }) {
     }));
   const scenario = form.scenario || [];
   const journeys = form.journeys || [];
-  const { callsPerUser, outputBudget } = workloadShape(form);
-  const workloadName = form.agentWorkflow ? "순차 에이전트 세션" : scenario.length > 1 ? "혼합 요청 사용자군" : "단일 질의 요청";
-  const callsLabel = journeys.length ? "사용자군별 호출" : "사용자당 호출";
-  const callsValue = journeys.length ? "단일 1회 / 에이전트 3회" : `${callsPerUser}회`;
+  const { callsPerUser, outputBudget: configuredOutputBudget } = workloadShape(form);
+  const trace = form.trace || [];
+  const outputBudget = trace.length
+    ? Math.max(...trace.map((event) => Number(event.max_tokens || form.maxTokens || 0)))
+    : configuredOutputBudget;
+  const workloadName = trace.length ? "실제 트래픽 재생" : form.agentWorkflow ? "순차 에이전트 세션" : scenario.length > 1 ? "혼합 요청 사용자군" : "단일 질의 요청";
+  const callsLabel = trace.length ? "가져온 요청" : journeys.length ? "사용자군별 호출" : "사용자당 호출";
+  const callsValue = trace.length ? `${trace.length.toLocaleString()}건` : journeys.length ? "단일 1회 / 에이전트 3회" : `${callsPerUser}회`;
   return (
     <section className="advanced panel">
       <section className="workload-plan" aria-live="polite">
@@ -959,6 +1003,29 @@ function ScenarioControls({ form, setForm, advice, applyAdvice }) {
       <div className="workflow-choice"><div><strong>장기 에이전트 작업</strong><p>탐색부터 구현·재검토까지 6단계의 긴 개발 작업을 재현합니다.</p></div><button type="button" className="small" onClick={applyLongAgentProfile}>장기 작업으로 구성</button></div>
       <div className="workflow-choice mixed"><div><strong>현실적 혼합 사용자군</strong><p>간단 질의 60% · RAG 25% · 개발 작업 15%를 하나의 부하 테스트에 섞습니다.</p></div><button type="button" className="small" onClick={applyMixedProfile}>혼합 사용자군으로 구성</button></div>
       </div>
+      <section className="trace-replay">
+        <div>
+          <strong>실제 트래픽 파일 재생</strong>
+          <p>JSON 또는 JSONL의 시간 간격·입력 길이·출력 길이를 그대로 재생합니다. 파일은 브라우저에서 읽어 폐쇄망 내부 Controller에만 전달하며 외부 서비스로 전송하지 않습니다.</p>
+          <code>{'{"timestamp_ms":0,"name":"coding","prompt_tokens":2048,"max_tokens":4096}'}</code>
+        </div>
+        <label className="trace-speed">
+          재생 속도
+          <input name="traceTimeScale" type="number" min="0.1" max="100" step="0.1" value={form.traceTimeScale || "1"} onChange={(event) => setForm((current) => ({ ...current, traceTimeScale: event.target.value }))} />
+          <small>1은 원래 속도, 2는 2배 빠르게 재생합니다.</small>
+        </label>
+        <label className="trace-file">
+          트레이스 선택
+          <input type="file" accept=".json,.jsonl,application/json" onChange={importTrace} />
+        </label>
+        {trace.length > 0 && (
+          <div className="trace-loaded">
+            <span>{trace.length.toLocaleString()}건 · 약 {traceDurationSeconds(trace, form.traceTimeScale).toLocaleString()}초</span>
+            <button type="button" className="small danger" onClick={() => setForm((current) => ({ ...current, trace: [] }))}>제거</button>
+          </div>
+        )}
+        {traceError && <p className="error">{traceError}</p>}
+      </section>
       <details className="advanced-editor">
         <summary>고급 설정 직접 편집</summary>
         <p>안전 한계, 부하 단계, 단계별 프롬프트와 최대 출력 토큰을 조정합니다.</p>
@@ -1752,6 +1819,82 @@ function Comparison({ runs }) {
   );
 }
 
+function Captures({ captures, profiles, settings, saveSettings, apply, remove, refresh }) {
+  const modelProfiles = profiles.filter((item) => item.type === "model");
+  const [draft, setDraft] = useState(settings || {});
+  const [token, setToken] = useState("");
+  const [selectedTarget, setSelectedTarget] = useState("");
+  const [client, setClient] = useState("Qwen Code");
+  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
+  const [copied, setCopied] = useState("");
+  useEffect(() => setDraft(settings || {}), [settings]);
+  useEffect(() => {
+    if (!selectedTarget && modelProfiles[0]) setSelectedTarget(modelProfiles[0].id);
+  }, [selectedTarget, modelProfiles]);
+  const selectedProfile = modelProfiles.find((item) => item.id === selectedTarget);
+  const baseURL = selectedProfile ? `${window.location.origin}/capture/${selectedProfile.id}/v1` : "";
+  const updateDraft = (event) => setDraft((current) => ({
+    ...current,
+    [event.target.name]: event.target.type === "checkbox" ? event.target.checked : Number(event.target.value),
+  }));
+  const generateToken = () => {
+    const bytes = new Uint8Array(32); crypto.getRandomValues(bytes);
+    setToken(Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join(""));
+  };
+  const copy = async (label, value) => { await navigator.clipboard.writeText(value); setCopied(label); window.setTimeout(() => setCopied(""), 1800); };
+  return (
+    <div className="details">
+      <section className="panel capture-guide">
+        <div className="section-title"><h3>캡처 프록시 설정</h3><span className={draft.enabled ? "capture-state on" : "capture-state"}>{draft.enabled ? "사용 중" : "중지됨"}</span></div>
+        <p className="muted">프롬프트·응답·API 키는 저장하지 않습니다. 호출 시각, 토큰 수, 지연, 도구 호출 메타데이터만 익명 세션으로 기록합니다.</p>
+        <div className="capture-settings-grid">
+          <label className="checkbox-field"><span>캡처 프록시 활성화<small>즉시 신규 연결을 허용하거나 차단합니다.</small></span><input name="enabled" type="checkbox" checked={Boolean(draft.enabled)} onChange={updateDraft} /></label>
+          <label className="wide">캡처 인증 토큰 <small>{draft.token_configured ? "토큰이 설정되어 있습니다. 변경할 때만 새 값을 입력하세요." : "최소 24자입니다. 생성 후 복사해 JupyterHub 클라이언트에 전달하세요."}</small><div className="inline-field"><input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={draft.token_configured ? "설정됨 · 변경하려면 입력" : "토큰 생성 또는 직접 입력"} /><button className="small" onClick={generateToken}>안전한 토큰 생성</button>{token && <button className="small secondary" onClick={() => copy("token", token)}>{copied === "token" ? "복사됨" : "토큰 복사"}</button>}</div></label>
+          <label>세션 분리 기준 (분)<small>같은 클라이언트가 이 시간 동안 호출하지 않으면 다음 호출부터 새 작업으로 분리합니다.</small><input name="session_idle_minutes" type="number" min="1" max="120" value={draft.session_idle_minutes ?? 15} onChange={updateDraft} /></label>
+          <label>세션당 최대 모델 호출<small>무한 루프나 과도한 에이전트 기록으로부터 저장소를 보호합니다.</small><input name="max_events_per_session" type="number" min="8" max="128" value={draft.max_events_per_session ?? 128} onChange={updateDraft} /></label>
+          <label>보관할 최근 세션 수<small>한도를 넘으면 가장 오래된 캡처부터 자동 정리합니다.</small><input name="retention_sessions" type="number" min="10" max="500" value={draft.retention_sessions ?? 100} onChange={updateDraft} /></label>
+        </div>
+        <h4>재생 기본값</h4>
+        <div className="capture-settings-grid replay-defaults">
+          <label>기본 동시 사용자 (VU)<small>캡처를 적용할 때 자동으로 입력할 개발자 수입니다.</small><input name="default_replay_vus" type="number" min="1" max="500" value={draft.default_replay_vus ?? 30} onChange={updateDraft} /></label>
+          <label>도구 대기시간 배율<small>1은 실제 간격, 0.5는 2배 빠르게, 2는 2배 느리게 재생합니다.</small><input name="replay_think_time_scale" type="number" min="0.1" max="10" step="0.1" value={draft.replay_think_time_scale ?? 1} onChange={updateDraft} /></label>
+          <label>실행 여유시간 (초)<small>실제 세션 길이에 더해 모델 응답이 끝날 시간을 확보합니다.</small><input name="replay_buffer_seconds" type="number" min="30" max="1800" value={draft.replay_buffer_seconds ?? 300} onChange={updateDraft} /></label>
+          <label>종료 유예 (초)<small>새 호출을 멈춘 뒤 진행 중 응답을 기다리는 시간입니다.</small><input name="replay_drain_seconds" type="number" min="0" max="600" value={draft.replay_drain_seconds ?? 120} onChange={updateDraft} /></label>
+        </div>
+        <button onClick={async () => { if (await saveSettings({ ...draft, token })) setToken(""); }}>설정 저장</button>
+      </section>
+      <section className="panel capture-guide">
+        <h3>Qwen Code / OpenCode 연결 값</h3>
+        {modelProfiles.length === 0 ? <p className="warn-line">먼저 ‘모델 등록’에서 OpenAI 호환 모델을 등록하세요.</p> : <>
+          <div className="capture-connect-grid">
+            <label>등록 모델<select value={selectedTarget} onChange={(event) => setSelectedTarget(event.target.value)}>{modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.model}</option>)}</select></label>
+            <label>클라이언트<select value={client} onChange={(event) => setClient(event.target.value)}><option>Qwen Code</option><option>OpenCode</option></select></label>
+          </div>
+          <div className="connection-values">
+            <div><span>OpenAI baseURL</span><code>{baseURL}</code><button className="small secondary" onClick={() => copy("url", baseURL)}>{copied === "url" ? "복사됨" : "복사"}</button></div>
+            <div><span>세션 헤더</span><code>X-Load-Observatory-Session: {sessionId}</code><button className="small secondary" onClick={() => copy("session", sessionId)}>{copied === "session" ? "복사됨" : "UUID 복사"}</button><button className="small secondary" onClick={() => setSessionId(crypto.randomUUID())}>새 작업 UUID</button></div>
+            <div><span>클라이언트 헤더</span><code>X-Load-Observatory-Client: {client}</code><button className="small secondary" onClick={() => copy("client", client)}>{copied === "client" ? "복사됨" : "값 복사"}</button></div>
+          </div>
+          <p className="muted">Authorization Bearer 값에는 위에서 생성해 저장한 캡처 토큰을 사용합니다. 저장된 토큰은 보안상 다시 표시되지 않습니다. 정적 세션 헤더를 사용해도 설정한 유휴 시간이 지나면 서버가 새 작업으로 자동 분리합니다.</p>
+        </>}
+      </section>
+      <section className="panel">
+        <div className="section-title"><h3>수집된 코딩 세션</h3><button className="small" onClick={refresh}>새로고침</button></div>
+        {captures.length === 0 ? <p className="empty">아직 캡처된 세션이 없습니다.</p> : (
+          <div className="capture-list">{captures.map((capture) => {
+            const stats = captureStats(capture);
+            return <article className="capture-card" key={capture.id}>
+              <div><strong>{capture.client}</strong><span>{new Date(capture.started_unix_ms).toLocaleString()}</span></div>
+              <p>{stats.calls}회 모델 호출 · {stats.durationSeconds}초 · 최대 입력 {stats.maxPromptTokens.toLocaleString()} · 최대 출력 {stats.maxOutputTokens.toLocaleString()} 토큰</p>
+              <div className="capture-actions"><button className="small" onClick={() => apply(capture)}>이 패턴으로 테스트 설정</button><button className="small danger" onClick={() => remove(capture.id)}>삭제</button></div>
+            </article>;
+          })}</div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const [page, setPage] = useState("test");
   const [session, setSession] = useState(null);
@@ -1788,6 +1931,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [profiles, setProfiles] = useState([]);
+  const [captures, setCaptures] = useState([]);
+  const [captureSettings, setCaptureSettings] = useState(null);
   const [profile, setProfile] = useState(emptyProfile);
   const [selectedProfileId, setSelectedProfileId] = useState(() =>
     loadSavedValue(window.localStorage, "load-observatory-profile", ""),
@@ -1796,6 +1941,8 @@ export default function App() {
     listTargets()
       .then(setProfiles)
       .catch((err) => setError(err.message));
+  const refreshCaptures = () => listCaptures().then(setCaptures).catch((err) => setError(err.message));
+  const refreshCaptureSettings = () => getCaptureSettings().then(setCaptureSettings).catch((err) => setError(err.message));
   const refresh = () =>
     listRuns()
       .then(setRuns)
@@ -1804,7 +1951,8 @@ export default function App() {
     refreshProfiles();
   }, []);
   useEffect(() => {
-    saveValue(window.localStorage, "load-observatory-form", form);
+    const { trace: _sensitiveTrace, ...savedForm } = form;
+    saveValue(window.localStorage, "load-observatory-form", savedForm);
   }, [form]);
   useEffect(() => {
     saveValue(
@@ -1816,6 +1964,7 @@ export default function App() {
   useEffect(() => {
     if (page === "records") refresh();
     if (page === "profiles") refreshProfiles();
+    if (page === "captures") { refreshProfiles(); refreshCaptures(); refreshCaptureSettings(); }
   }, [page]);
   useEffect(() => {
     if (!run || ["completed", "cancelled"].includes(run.status)) return;
@@ -1936,6 +2085,7 @@ export default function App() {
   const start = async () => {
     try {
       if (advice.invalid) throw new Error(advice.message);
+      if (mode === "automatic" && form.trace?.length) throw new Error("실제 트래픽 재생은 수동 테스트에서 실행하세요. 자동 탐색은 부하 단계를 변경하므로 트레이스 시간축을 보존할 수 없습니다.");
       const targetId =
         selectedProfileId ||
         (
@@ -1958,6 +2108,7 @@ export default function App() {
     records: "테스트 기록",
     monitor: "모니터링",
     profiles: "모델 등록",
+    captures: "실사용 캡처",
   };
   return (
     <main className="shell">
@@ -1969,6 +2120,7 @@ export default function App() {
             ["records", "테스트 기록"],
             ["monitor", "모니터링"],
             ["profiles", "모델 등록"],
+            ["captures", "실사용 캡처"],
           ].map(([id, label]) => (
             <button
               className={page === id ? "active" : ""}
@@ -2108,6 +2260,29 @@ export default function App() {
             save={saveProfile}
             remove={removeProfile}
             check={checkProfile}
+          />
+        )}
+        {page === "captures" && (
+          <Captures
+            captures={captures}
+            profiles={profiles}
+            settings={captureSettings}
+            refresh={() => Promise.all([refreshCaptures(), refreshProfiles(), refreshCaptureSettings()])}
+            saveSettings={async (value) => {
+              try { setCaptureSettings(await updateCaptureSettings(value)); setNotice("캡처와 재생 기본 설정을 저장했습니다."); setError(""); return true; }
+              catch (err) { setError(err.message); return false; }
+            }}
+            remove={async (id) => { await deleteCapture(id); await refreshCaptures(); }}
+            apply={async (capture) => {
+              const latestProfiles = await listTargets();
+              setProfiles(latestProfiles);
+              const profile = latestProfiles.find((item) => item.id === capture.target_id);
+              if (!profile) { setError("이 캡처의 모델 등록이 삭제되었습니다. 모델을 다시 등록한 뒤 새 세션을 캡처하세요."); return; }
+              setForm((current) => captureToWorkload(capture, current, captureSettings || {}));
+              setSelectedProfileId(capture.target_id);
+              setForm((current) => ({ ...current, type: profile.type, url: profile.url, model: profile.model || "" }));
+              setMode("manual"); setPage("test"); setNotice(`${capture.client} 세션을 1인당 긴 작업 1회로 적용했습니다. 동시 사용자 수를 확인한 뒤 시작하세요.`);
+            }}
           />
         )}
       </div>

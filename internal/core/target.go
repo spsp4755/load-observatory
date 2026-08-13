@@ -78,7 +78,33 @@ func ValidateRunConfig(config RunConfig) error {
 	if config.SteadyStateSeconds < 0 || config.SteadyStateSeconds >= config.DurationSeconds {
 		return errors.New("steady_state_seconds must be shorter than the run duration")
 	}
-	if len(config.Stages) > 12 || len(config.Scenario) > 8 || len(config.Journeys) > 5 {
+	if config.SessionsPerVU < 0 || config.SessionsPerVU > 100 || config.SessionsPerVU > 0 && (!config.AgentWorkflow || config.Mode != LoadModeVU || len(config.Journeys) > 0) {
+		return errors.New("sessions_per_vu requires a direct VU agent workflow and must be at most 100")
+	}
+	if len(config.Trace) > 0 {
+		if config.Mode != LoadModeRPS || len(config.Stages) > 0 || config.Shards > 1 {
+			return errors.New("trace replay requires rps mode, one shard, and no load stages")
+		}
+		if len(config.Trace) > 10000 || config.TraceTimeScale < 0 || config.TraceTimeScale > 100 {
+			return errors.New("trace replay must contain at most 10000 events and use a time scale up to 100")
+		}
+		previous := int64(-1)
+		for _, event := range config.Trace {
+			if event.TimestampMillis < previous || event.PromptTokens < 0 || event.PromptTokens > MaxModelTokens || event.MaxTokens < 0 || event.MaxTokens > MaxModelTokens || len(event.Prompt) > 200000 {
+				return errors.New("invalid trace replay event")
+			}
+			previous = event.TimestampMillis
+		}
+		scale := config.TraceTimeScale
+		if scale == 0 {
+			scale = 1
+		}
+		span := config.Trace[len(config.Trace)-1].TimestampMillis - config.Trace[0].TimestampMillis
+		if float64(span)/scale >= float64(config.DurationSeconds*1000) {
+			return errors.New("trace replay duration must include the final event")
+		}
+	}
+	if len(config.Stages) > 12 || len(config.Scenario) > 64 || len(config.Journeys) > 5 {
 		return errors.New("too many stages or scenario tasks")
 	}
 	for _, stage := range config.Stages {
@@ -105,5 +131,5 @@ func ValidateRunConfig(config RunConfig) error {
 }
 
 func validScenarioTask(task ScenarioTask) bool {
-	return task.Name != "" && task.Prompt != "" && task.Weight >= 1 && task.Weight <= 100 && task.ThinkTimeMillis >= 0 && task.ThinkTimeMillis <= 60000 && task.MaxTokens >= 0 && task.MaxTokens <= MaxModelTokens
+	return task.Name != "" && task.Prompt != "" && task.Weight >= 1 && task.Weight <= 100 && task.ThinkTimeMillis >= 0 && task.ThinkTimeMillis <= 60000 && task.MaxTokens >= 0 && task.MaxTokens <= MaxModelTokens && task.PromptTokens >= 0 && task.PromptTokens <= MaxModelTokens
 }

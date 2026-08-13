@@ -101,3 +101,11 @@ test("workloadDifferences is empty for the same workload", () => {
   const run = { config: { cache_policy: "bypass", max_tokens: 4096 }, result: { output_length_pinned: true, context_accumulated: true } };
   assert.deepEqual(workloadDifferences(run, structuredClone(run)), []);
 });
+
+test("workloadDifferences catches changed trace replay conditions", () => {
+  const left = { config: { trace_time_scale: 1, trace: [{ timestamp_ms: 0, max_tokens: 64 }] }, result: {} };
+  const right = { config: { trace_time_scale: 2, trace: [{ timestamp_ms: 0, max_tokens: 128 }] }, result: {} };
+  const differences = workloadDifferences(left, right);
+  assert.ok(differences.some((item) => item.includes("트레이스 재생 속도")));
+  assert.ok(differences.includes("트레이스 내용: 다름"));
+});

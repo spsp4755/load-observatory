@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory)][string]$Registry,
   [Parameter(Mandatory)][string]$OutputPath,
-  [string]$Version = 'v0.1.0'
+  [string]$Version = 'v0.4.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,4 +17,4 @@ $replacements = @{
   'prom/node-exporter:v1.8.2' = "$Registry/load-observatory/node-exporter:v1.8.2"
 }
 foreach ($source in $replacements.Keys) { $manifest = $manifest.Replace($source, $replacements[$source]) }
-$manifest | Set-Content -LiteralPath $OutputPath -NoNewline
+[System.IO.File]::WriteAllText($OutputPath, $manifest, (New-Object System.Text.UTF8Encoding($false)))

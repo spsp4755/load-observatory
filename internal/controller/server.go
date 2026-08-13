@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,18 +17,36 @@ import (
 )
 
 type Server struct {
-	store   store.Store
-	monitor monitor.Client
-	auth    *auth.Gate
+	store               store.Store
+	monitor             monitor.Client
+	auth                *auth.Gate
+	envCaptureTokenHash string
+	captureSalt         []byte
+	proxyClient         *http.Client
 }
 
 func NewServer(memory store.Store) *Server {
-	return &Server{store: memory, auth: auth.NewGate(auth.Config{})}
+	return newServer(memory, monitor.Client{})
 }
 func NewServerWithMonitor(memory store.Store, client monitor.Client) *Server {
-	server := &Server{store: memory, monitor: client, auth: auth.NewGate(auth.Config{})}
+	server := newServer(memory, client)
 	go server.sampleServerMetrics()
 	return server
+}
+
+func newServer(memory store.Store, client monitor.Client) *Server {
+	salt := make([]byte, 32)
+	_, _ = rand.Read(salt)
+	return &Server{store: memory, monitor: client, auth: auth.NewGate(auth.Config{}), captureSalt: salt, proxyClient: &http.Client{}}
+}
+
+// WithCaptureProxy enables the machine-facing OpenAI-compatible capture path.
+// The token authenticates capture clients only and is never forwarded upstream.
+func (s *Server) WithCaptureProxy(token string) *Server {
+	if token != "" {
+		s.envCaptureTokenHash = hashCaptureToken(token)
+	}
+	return s
 }
 
 // WithAuth enables Keycloak (or any OIDC provider) login. Without this call,
@@ -78,7 +97,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.auth.Logout(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/health":
 		queued, running, agentOnline := s.store.Health()
-		writeJSON(w, http.StatusOK, map[string]any{"controller_online": true, "agent_online": agentOnline, "queued_runs": queued, "running_runs": running, "login_required": s.auth.Enabled()})
+		_, captureEnabled, _ := s.captureCredentials()
+		writeJSON(w, http.StatusOK, map[string]any{"controller_online": true, "agent_online": agentOnline, "queued_runs": queued, "running_runs": running, "login_required": s.auth.Enabled(), "capture_enabled": captureEnabled})
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/capture/"):
+		s.captureCompletion(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/heartbeat":
 		s.store.TouchAgent()
 		w.WriteHeader(http.StatusNoContent)
@@ -101,6 +123,18 @@ func (s *Server) serveHumanAPI(w http.ResponseWriter, r *http.Request) {
 		s.createTarget(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/targets":
 		s.listTargets(w)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/captures":
+		writeJSON(w, http.StatusOK, s.store.ListCaptures())
+	case r.Method == http.MethodGet && r.URL.Path == "/api/capture-settings":
+		s.getCaptureSettings(w)
+	case r.Method == http.MethodPut && r.URL.Path == "/api/capture-settings":
+		s.updateCaptureSettings(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/captures/"):
+		if !s.store.DeleteCapture(strings.TrimPrefix(r.URL.Path, "/api/captures/")) {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/targets/") && strings.HasSuffix(r.URL.Path, "/check"):
 		s.checkTarget(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/targets/"):
@@ -419,7 +453,7 @@ func applyWorkloadDefaults(config *core.RunConfig) {
 	if config.DrainSeconds == 0 {
 		config.DrainSeconds = min(120, config.DurationSeconds/5)
 	}
-	if config.SteadyStateSeconds == 0 {
+	if config.SteadyStateSeconds == 0 && config.SessionsPerVU == 0 {
 		config.SteadyStateSeconds = min(60, config.DurationSeconds/5)
 	}
 	if config.MinCompletionPercent == 0 {

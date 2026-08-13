@@ -6,7 +6,7 @@ import { toSearchConfig } from "../src/run-form.js";
 test("toRunConfig converts VU form values to a controller payload", () => {
   assert.deepEqual(
     toRunConfig({ targetId: "target-1", mode: "vu", vus: "10", rps: "100", duration: "60", prompt: "write a Go API", maxTokens: "4096", maxErrorPercent: "2", maxP95Millis: "2000" }),
-    { target_id: "target-1", mode: "vu", vus: 10, duration_seconds: 60, prompt: "write a Go API", max_tokens: 4096, max_error_percent: 2, max_p95_millis: 2000, cache_policy: "mixed", variation_percent: 30, shards: 3, max_ttft_p95_millis: 0, min_output_tokens_per_second: 0, max_tpot_p95_millis: 0, min_goodput_percent: 0, max_in_flight: 0, warmup_requests: 0, cooldown_seconds: 0, drain_seconds: 0, steady_state_seconds: 0, min_completion_percent: 0, ignore_eos: false, server: { max_num_seqs: 0, max_num_batched_tokens: 0, tensor_parallel_size: 0 }, accumulate_context: false, arrival_pattern: "uniform", output_tokens_stdev: 0, prompt_pad_tokens: 0, prompt_pad_stdev: 0, stages: [], scenario: [], agent_workflow: false, journeys: [] },
+    { target_id: "target-1", mode: "vu", vus: 10, duration_seconds: 60, prompt: "write a Go API", max_tokens: 4096, max_error_percent: 2, max_p95_millis: 2000, cache_policy: "mixed", variation_percent: 30, shards: 3, max_ttft_p95_millis: 0, min_output_tokens_per_second: 0, max_tpot_p95_millis: 0, min_goodput_percent: 0, max_in_flight: 0, warmup_requests: 0, cooldown_seconds: 0, drain_seconds: 0, steady_state_seconds: 0, min_completion_percent: 0, ignore_eos: false, server: { max_num_seqs: 0, max_num_batched_tokens: 0, tensor_parallel_size: 0 }, accumulate_context: false, arrival_pattern: "uniform", output_tokens_stdev: 0, prompt_pad_tokens: 0, prompt_pad_stdev: 0, trace: [], trace_time_scale: 1, stages: [], scenario: [], agent_workflow: false, journeys: [] },
   );
 });
 
@@ -44,4 +44,11 @@ test("toRunConfig preserves mixed user journeys", () => {
   const journeys = [{ name: "agent", weight: 15, agent_workflow: true, scenario: [{ name: "search", prompt: "tool search", weight: 1, max_tokens: 4096 }] }];
   const config = toRunConfig({ targetId: "target-1", mode: "vu", vus: "10", duration: "30", prompt: "base", maxTokens: "64", maxErrorPercent: "2", maxP95Millis: "2000", journeys });
   assert.deepEqual(config.journeys, journeys);
+});
+
+test("toRunConfig forwards local trace replay events", () => {
+  const trace = [{ timestamp_ms: 0, prompt_tokens: 128, max_tokens: 64 }];
+  const config = toRunConfig({ targetId: "target-1", mode: "rps", rps: "1", duration: "10", prompt: "base", maxTokens: "64", maxErrorPercent: "2", maxP95Millis: "2000", trace, traceTimeScale: "2" });
+  assert.deepEqual(config.trace, trace);
+  assert.equal(config.trace_time_scale, 2);
 });

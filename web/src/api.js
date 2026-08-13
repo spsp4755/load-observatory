@@ -28,3 +28,7 @@ export const logout = () => request("/auth/logout", { method: "POST" }).then(() 
 export const createSearch = (search) => request("/api/searches", { method: "POST", body: JSON.stringify(search) });
 export const getSearch = (id) => request(`/api/searches/${id}`);
 export const cancelSearch = (id) => request(`/api/searches/${id}/cancel`, { method: "POST" });
+export const listCaptures = () => request("/api/captures");
+export const deleteCapture = (id) => request(`/api/captures/${id}`, { method: "DELETE" });
+export const getCaptureSettings = () => request("/api/capture-settings");
+export const updateCaptureSettings = (settings) => request("/api/capture-settings", { method: "PUT", body: JSON.stringify(settings) });
