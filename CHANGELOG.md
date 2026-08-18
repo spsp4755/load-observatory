@@ -9,6 +9,7 @@
 - 원격 모델 호출형 linux/amd64 폐쇄망 번들에 고정 버전 이미지 4개, Harbor 렌더링 매니페스트, Podman load/push 스크립트 및 SHA-256 체크섬을 포함합니다.
 - 이미지 4개를 압축 해제 없이 `podman load -i` 한 번으로 불러오는 통합 다중 이미지 아카이브를 제공합니다.
 - 로컬 Kubernetes 노드를 잘못 측정하던 DCGM/node exporter와 내장 Prometheus 및 ClusterRole을 제거하고, 기존 Traefik 기본 TLS와 클러스터 Harbor 인증을 사용하도록 배포를 단순화했습니다.
+- chmod가 제한된 NFS/CSI PVC에서도 PostgreSQL을 초기화할 수 있도록 `PGDATA`를 볼륨 마운트 루트 아래 전용 디렉터리로 지정했습니다.
 - Kubernetes 배포에 비루트 실행, health probe, resource requests/limits, Harbor imagePullSecret 연결을 추가했습니다.
 
 ## v0.3.2

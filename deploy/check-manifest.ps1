@@ -9,6 +9,7 @@ if ($manifest -notmatch 'name: PROMETHEUS_URL, value: ""') { throw 'remote-model
 if ($manifest -notmatch 'runAsNonRoot: true') { throw 'non-root workload security context is required' }
 if ($manifest -notmatch 'readinessProbe:') { throw 'readiness probes are required' }
 if ($manifest -notmatch 'resources:') { throw 'resource requests and limits are required' }
+if ($manifest -notmatch 'name: PGDATA, value: "/var/lib/postgresql/data/pgdata"') { throw 'PostgreSQL must initialize below the mount root for restricted CSI/NFS volumes' }
 
 $loader = Get-Content -Raw "$PSScriptRoot/load-images.ps1"
 foreach ($image in 'load-observatory/controller', 'load-observatory/agent', 'load-observatory/web', 'postgres:16') {

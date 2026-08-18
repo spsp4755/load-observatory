@@ -29,12 +29,20 @@ spec:
     metadata: { labels: { app: postgres } }
     spec:
       serviceAccountName: load-observatory
-      securityContext: { runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, fsGroup: 999 }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: postgres
           image: postgres:16
           imagePullPolicy: IfNotPresent
           envFrom: [{ secretRef: { name: postgres-credentials } }]
+          # Do not initialize the database in the volume mount root. Some
+          # NFS/CSI backends prohibit chmod on that root directory.
+          env: [{ name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }]
           ports: [{ containerPort: 5432 }]
           volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
           readinessProbe: { exec: { command: ["pg_isready", "-U", "load_observatory"] }, periodSeconds: 5, timeoutSeconds: 3 }

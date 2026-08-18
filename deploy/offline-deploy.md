@@ -91,6 +91,13 @@ unset LO_POSTGRES_PASSWORD LO_ENCRYPTION_KEY LO_CAPTURE_TOKEN LO_SESSION_SECRET
 
 `CAPTURE_PROXY_TOKEN`은 최초 부팅용 값입니다. 배포 후 UI의 **실사용 캡처** 탭에서 새 토큰을 발급하면 PostgreSQL에 해시로 저장되며 Pod 재시작 없이 교체됩니다.
 
+`TARGET_API_KEY_ENCRYPTION_KEY`에는 `openssl rand -base64 32` 결과를 그대로 넣어야 합니다. Kubernetes Secret 저장 인코딩과 애플리케이션 키 인코딩은 별개이므로 임의 문자열이나 명령문 자체를 넣으면 controller가 시작을 거부합니다. 다음 검증 결과는 정확히 `32`여야 합니다.
+
+```bash
+kubectl -n load-observatory get secret postgres-credentials \
+  -o jsonpath='{.data.TARGET_API_KEY_ENCRYPTION_KEY}' | base64 -d | base64 -d | wc -c
+```
+
 ## 6. Traefik과 DNS
 
 Ingress는 기존 `traefik` IngressClass의 `websecure` entrypoint와 기본 TLS store를 사용합니다. 클러스터 정책상 이름 있는 인증서가 필요할 때만 `spec.tls[].secretName`을 추가합니다.
