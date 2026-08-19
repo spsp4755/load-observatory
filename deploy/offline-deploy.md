@@ -7,21 +7,28 @@
 - Service URL: `https://load-observatory.kubagents-ofc.koreacb.com`
 - 배포 파일: `k8s-harbor.yaml`
 
+HTTPS 모델 게이트웨이가 공인 CA 인증서를 사용하면 추가 설정이 필요 없습니다. 사설 CA라면 적용 전에 PEM 인증서를 Secret으로 등록합니다. controller와 agent가 이 선택적 Secret을 함께 신뢰합니다.
+
+```bash
+kubectl -n load-observatory create secret generic model-gateway-ca \
+  --from-file=corporate-root-ca.crt=./corporate-root-ca.crt
+```
+
 ## 1. 가장 간단한 단일 이미지 아카이브 방식
 
 이미지 4개는 하나의 아카이브에 들어 있습니다. 압축을 풀지 않고 한 번에 로드합니다.
 
 ```bash
-sha256sum -c load-observatory-v0.4.1-images-amd64.tar.gz.sha256
-podman load -i load-observatory-v0.4.1-images-amd64.tar.gz
+sha256sum -c load-observatory-v0.4.2-images-amd64.tar.gz.sha256
+podman load -i load-observatory-v0.4.2-images-amd64.tar.gz
 ```
 
 Harbor로 tag/push까지 자동 처리하려면 Release에서 받은 `load-images.sh`에 같은 파일을 전달합니다. 스크립트 내부에서도 `podman load`는 한 번만 실행됩니다.
 
 ```bash
 chmod +x load-images.sh
-./load-images.sh ./load-observatory-v0.4.1-images-amd64.tar.gz \
-  harbor.kubagents-ofc.koreacb.com v0.4.1
+./load-images.sh ./load-observatory-v0.4.2-images-amd64.tar.gz \
+  harbor.kubagents-ofc.koreacb.com v0.4.2
 ```
 
 `k8s-harbor.yaml`도 GitHub Release에서 독립 파일로 받을 수 있습니다. 아래 전체 번들은 문서와 개별 이미지까지 보관해야 할 때만 사용하십시오.
@@ -31,16 +38,16 @@ chmod +x load-images.sh
 인터넷 연결이 가능한 빌드 PC에서 받은 두 파일을 폐쇄망으로 함께 반입합니다.
 
 ```text
-load-observatory-v0.4.1-amd64.tar.gz
-load-observatory-v0.4.1-amd64.tar.gz.sha256
+load-observatory-v0.4.2-amd64.tar.gz
+load-observatory-v0.4.2-amd64.tar.gz.sha256
 ```
 
 폐쇄망 Linux 호스트에서 검증하고 압축을 풉니다.
 
 ```bash
-sha256sum -c load-observatory-v0.4.1-amd64.tar.gz.sha256
-tar -xzf load-observatory-v0.4.1-amd64.tar.gz
-cd load-observatory-v0.4.1-amd64
+sha256sum -c load-observatory-v0.4.2-amd64.tar.gz.sha256
+tar -xzf load-observatory-v0.4.2-amd64.tar.gz
+cd load-observatory-v0.4.2-amd64
 sha256sum -c SHA256SUMS
 ```
 
@@ -61,7 +68,7 @@ Harbor가 사설 CA를 사용한다면 CA 인증서를 Podman과 모든 Kubernet
 
 ```bash
 chmod +x deploy/load-images.sh
-./deploy/load-images.sh ./images harbor.kubagents-ofc.koreacb.com v0.4.1
+./deploy/load-images.sh ./images harbor.kubagents-ofc.koreacb.com v0.4.2
 ```
 
 이 매니페스트는 기존 클러스터의 Harbor 인증 설정을 사용하며 별도 `imagePullSecret`을 요구하지 않습니다.
@@ -110,7 +117,7 @@ load-observatory.kubagents-ofc.koreacb.com -> <TRAEFIK_INGRESS_IP>
 
 ## 7. 배포 및 확인
 
-`k8s-harbor.yaml`에는 예시 비밀번호 Secret이 없고, 모든 이미지는 `v0.4.1` 또는 고정된 upstream 버전으로 지정되어 있습니다.
+`k8s-harbor.yaml`에는 예시 비밀번호 Secret이 없고, 모든 이미지는 `v0.4.2` 또는 고정된 upstream 버전으로 지정되어 있습니다.
 
 ```bash
 kubectl apply -f k8s-harbor.yaml

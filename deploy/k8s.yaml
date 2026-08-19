@@ -94,6 +94,9 @@ spec:
             # Comma-separated DNS suffix allowlist for model/web targets. An
             # exact domain or any subdomain is accepted; lookalike domains are not.
             - { name: TARGET_ALLOWED_HOST_SUFFIXES, value: ".internal,.kubagents-ofc.koreacb.com" }
+            # If model-gateway-ca exists, Go also loads corporate CA files
+            # mounted there while retaining the image's standard CA bundle.
+            - { name: SSL_CERT_DIR, value: "/etc/load-observatory/ca:/etc/ssl/certs" }
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: postgres-credentials, key: DATABASE_URL } }
             - name: TARGET_API_KEY_ENCRYPTION_KEY
@@ -108,6 +111,7 @@ spec:
             - name: SESSION_SECRET
               valueFrom: { secretKeyRef: { name: postgres-credentials, key: SESSION_SECRET } }
           ports: [{ containerPort: 8080 }]
+          volumeMounts: [{ name: model-gateway-ca, mountPath: /etc/load-observatory/ca, readOnly: true }]
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           startupProbe: { httpGet: { path: /api/health, port: 8080 }, failureThreshold: 30, periodSeconds: 2 }
           readinessProbe: { httpGet: { path: /api/health, port: 8080 }, periodSeconds: 5, timeoutSeconds: 3 }
@@ -115,6 +119,9 @@ spec:
           resources:
             requests: { cpu: 250m, memory: 256Mi }
             limits: { cpu: "2", memory: 1Gi }
+      volumes:
+        - name: model-gateway-ca
+          secret: { secretName: model-gateway-ca, optional: true }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -136,11 +143,17 @@ spec:
         - name: agent
           image: load-observatory/agent:latest
           imagePullPolicy: IfNotPresent
-          env: [{ name: CONTROLLER_URL, value: "http://controller:8080" }]
+          env:
+            - { name: CONTROLLER_URL, value: "http://controller:8080" }
+            - { name: SSL_CERT_DIR, value: "/etc/load-observatory/ca:/etc/ssl/certs" }
+          volumeMounts: [{ name: model-gateway-ca, mountPath: /etc/load-observatory/ca, readOnly: true }]
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           resources:
             requests: { cpu: 500m, memory: 256Mi }
             limits: { cpu: "4", memory: 2Gi }
+      volumes:
+        - name: model-gateway-ca
+          secret: { secretName: model-gateway-ca, optional: true }
 ---
 apiVersion: v1
 kind: Service

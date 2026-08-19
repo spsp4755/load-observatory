@@ -3,7 +3,7 @@ set -eu
 
 ARCHIVE_INPUT="${1:-./images}"
 REGISTRY="${2:-harbor.kubagents-ofc.koreacb.com}"
-VERSION="${3:-v0.4.1}"
+VERSION="${3:-v0.4.2}"
 
 if [ -f "$ARCHIVE_INPUT" ]; then
   echo "[load all] $ARCHIVE_INPUT"

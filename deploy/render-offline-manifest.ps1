@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory)][string]$Registry,
   [Parameter(Mandatory)][string]$OutputPath,
-  [string]$Version = 'v0.4.1'
+  [string]$Version = 'v0.4.2'
 )
 
 $ErrorActionPreference = 'Stop'

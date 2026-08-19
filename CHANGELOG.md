@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.2
+
+- HTTPS 모델 게이트웨이 연결을 위해 controller·agent 이미지에 표준 CA 번들을 포함합니다.
+- 선택적 `model-gateway-ca` Secret으로 폐쇄망 사설 CA 인증서를 추가할 수 있습니다.
+
 ## v0.4.1
 
 - 모델·웹 대상 호스트 허용 목록을 `TARGET_ALLOWED_HOST_SUFFIXES`로 설정할 수 있습니다.
