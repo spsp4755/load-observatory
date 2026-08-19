@@ -8,6 +8,14 @@ import (
 )
 
 func ValidateTarget(rawURL string) error {
+	return ValidateTargetWithAllowedHostSuffixes(rawURL, []string{".internal"})
+}
+
+// ValidateTargetWithAllowedHostSuffixes permits private IP addresses and DNS
+// names that are either an exact match for, or a subdomain of, a configured
+// suffix. The label-boundary check deliberately rejects lookalike names such
+// as evilinternal or an allowed name followed by an attacker-controlled suffix.
+func ValidateTargetWithAllowedHostSuffixes(rawURL string, allowedHostSuffixes []string) error {
 	u, err := url.ParseRequestURI(rawURL)
 	if err != nil || u.Scheme == "" || u.Hostname() == "" {
 		return errors.New("target must be an absolute HTTP URL")
@@ -26,10 +34,13 @@ func ValidateTarget(rawURL string) error {
 		}
 		return nil
 	}
-	if !strings.HasSuffix(host, ".internal") {
-		return errors.New("target hostname must end in .internal")
+	for _, configured := range allowedHostSuffixes {
+		suffix := strings.Trim(strings.ToLower(strings.TrimSpace(configured)), ".")
+		if suffix != "" && (host == suffix || strings.HasSuffix(host, "."+suffix)) {
+			return nil
+		}
 	}
-	return nil
+	return errors.New("target hostname is not allowed; configure TARGET_ALLOWED_HOST_SUFFIXES")
 }
 
 func ValidateRunConfig(config RunConfig) error {

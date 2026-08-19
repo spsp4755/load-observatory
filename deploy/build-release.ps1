@@ -1,5 +1,5 @@
 param(
-  [string]$Version = 'v0.4.0',
+  [string]$Version = 'v0.4.1',
   [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\release'),
   [ValidateSet('podman', 'docker')][string]$Engine = 'podman',
   [string]$Registry = 'harbor.kubagents-ofc.koreacb.com',

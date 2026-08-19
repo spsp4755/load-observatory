@@ -14,6 +14,25 @@ func TestValidateTargetAcceptsPrivateAddress(t *testing.T) {
 	}
 }
 
+func TestValidateTargetWithAllowedHostSuffixesAcceptsConfiguredGateway(t *testing.T) {
+	allowed := []string{".internal", ".kubagents-ofc.koreacb.com"}
+	if err := ValidateTargetWithAllowedHostSuffixes("https://proxy-gateway.kubagents-ofc.koreacb.com/v1/chat/completions", allowed); err != nil {
+		t.Fatalf("configured target rejected: %v", err)
+	}
+}
+
+func TestValidateTargetWithAllowedHostSuffixesRejectsLookalikeDomains(t *testing.T) {
+	allowed := []string{".kubagents-ofc.koreacb.com"}
+	for _, rawURL := range []string{
+		"https://evilkubagents-ofc.koreacb.com/v1/chat/completions",
+		"https://proxy-gateway.kubagents-ofc.koreacb.com.attacker.example/v1/chat/completions",
+	} {
+		if err := ValidateTargetWithAllowedHostSuffixes(rawURL, allowed); err == nil {
+			t.Fatalf("lookalike target accepted: %s", rawURL)
+		}
+	}
+}
+
 func TestValidateRunConfigRejectsTooManyVUs(t *testing.T) {
 	config := RunConfig{Mode: LoadModeVU, VUs: MaxVUs + 1, DurationSeconds: 60}
 	if err := ValidateRunConfig(config); err == nil {

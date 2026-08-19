@@ -6,6 +6,7 @@ if ($manifest -match 'change-this-before-deploying|replace-with-base64|replace-w
 if ($manifest -match 'harbor-credentials') { throw 'cluster-managed registry auth must not require an app-specific pull Secret' }
 if ($manifest -match 'image: .*dcgm-exporter|image: .*node-exporter|image: .*prometheus|kind: ClusterRole') { throw 'remote-model deployment must not install local-node monitoring workloads or cluster RBAC' }
 if ($manifest -notmatch 'name: PROMETHEUS_URL, value: ""') { throw 'remote-model deployment must leave Prometheus disabled by default' }
+if ($manifest -notmatch 'name: TARGET_ALLOWED_HOST_SUFFIXES, value: "\.internal,\.kubagents-ofc\.koreacb\.com"') { throw 'the approved model gateway domain must be present in the target allowlist' }
 if ($manifest -notmatch 'runAsNonRoot: true') { throw 'non-root workload security context is required' }
 if ($manifest -notmatch 'readinessProbe:') { throw 'readiness probes are required' }
 if ($manifest -notmatch 'resources:') { throw 'resource requests and limits are required' }

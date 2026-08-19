@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.1
+
+- 모델·웹 대상 호스트 허용 목록을 `TARGET_ALLOWED_HOST_SUFFIXES`로 설정할 수 있습니다.
+- 허용된 도메인의 정확한 이름과 하위 도메인만 수락하며 유사 도메인 우회를 차단합니다.
+- 폐쇄망 기본 매니페스트에서 `.internal`과 `.kubagents-ofc.koreacb.com`을 허용합니다.
+
 ## v0.4.0
 
 - Qwen Code/OpenCode의 OpenAI 호환 요청을 익명 캡처하는 프록시와 세션 단위 trace replay를 추가했습니다.

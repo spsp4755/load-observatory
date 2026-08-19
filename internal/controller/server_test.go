@@ -43,6 +43,18 @@ func TestCreateModelTargetRequiresModelName(t *testing.T) {
 	}
 }
 
+func TestCreateTargetAcceptsConfiguredGatewayDomain(t *testing.T) {
+	server := NewServer(store.NewMemoryStore()).WithTargetAllowedHostSuffixes(".internal,.kubagents-ofc.koreacb.com")
+	request := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewBufferString(`{"name":"gateway","type":"model","url":"https://proxy-gateway.kubagents-ofc.koreacb.com/v1/chat/completions","model":"qwen"}`))
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("configured gateway rejected: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestAgentClaimAndResultCompleteRun(t *testing.T) {
 	memory := store.NewMemoryStore()
 	target := memory.CreateTarget(core.Target{Name: "web", Type: core.TargetTypeWeb, URL: "http://10.0.0.10/health"})

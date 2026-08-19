@@ -23,6 +23,7 @@ type Server struct {
 	envCaptureTokenHash string
 	captureSalt         []byte
 	proxyClient         *http.Client
+	targetHostSuffixes  []string
 }
 
 func NewServer(memory store.Store) *Server {
@@ -37,7 +38,17 @@ func NewServerWithMonitor(memory store.Store, client monitor.Client) *Server {
 func newServer(memory store.Store, client monitor.Client) *Server {
 	salt := make([]byte, 32)
 	_, _ = rand.Read(salt)
-	return &Server{store: memory, monitor: client, auth: auth.NewGate(auth.Config{}), captureSalt: salt, proxyClient: &http.Client{}}
+	return &Server{store: memory, monitor: client, auth: auth.NewGate(auth.Config{}), captureSalt: salt, proxyClient: &http.Client{}, targetHostSuffixes: []string{".internal"}}
+}
+
+// WithTargetAllowedHostSuffixes configures the DNS suffixes that may be used
+// when registering a target. Private IP addresses remain allowed. An empty
+// value retains the secure .internal default.
+func (s *Server) WithTargetAllowedHostSuffixes(value string) *Server {
+	if strings.TrimSpace(value) != "" {
+		s.targetHostSuffixes = strings.Split(value, ",")
+	}
+	return s
 }
 
 // WithCaptureProxy enables the machine-facing OpenAI-compatible capture path.
@@ -293,7 +304,7 @@ func (s *Server) createTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "model name is required", http.StatusBadRequest)
 		return
 	}
-	if err := core.ValidateTarget(target.URL); err != nil {
+	if err := core.ValidateTargetWithAllowedHostSuffixes(target.URL, s.targetHostSuffixes); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

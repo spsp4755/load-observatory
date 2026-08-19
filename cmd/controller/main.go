@@ -30,7 +30,9 @@ func main() {
 		defer postgres.Close()
 		data = postgres
 	}
-	server := controller.NewServerWithMonitor(data, monitor.New(os.Getenv("PROMETHEUS_URL"))).WithCaptureProxy(os.Getenv("CAPTURE_PROXY_TOKEN"))
+	server := controller.NewServerWithMonitor(data, monitor.New(os.Getenv("PROMETHEUS_URL"))).
+		WithCaptureProxy(os.Getenv("CAPTURE_PROXY_TOKEN")).
+		WithTargetAllowedHostSuffixes(os.Getenv("TARGET_ALLOWED_HOST_SUFFIXES"))
 	if issuer := os.Getenv("OIDC_ISSUER_URL"); issuer != "" {
 		sessionKey := []byte(os.Getenv("SESSION_SECRET"))
 		if len(sessionKey) < 32 {

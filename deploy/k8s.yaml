@@ -91,6 +91,9 @@ spec:
             # compatible URL and API key in the UI. Leave this empty unless
             # that model server's own Prometheus is reachable from this pod.
             - { name: PROMETHEUS_URL, value: "" }
+            # Comma-separated DNS suffix allowlist for model/web targets. An
+            # exact domain or any subdomain is accepted; lookalike domains are not.
+            - { name: TARGET_ALLOWED_HOST_SUFFIXES, value: ".internal,.kubagents-ofc.koreacb.com" }
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: postgres-credentials, key: DATABASE_URL } }
             - name: TARGET_API_KEY_ENCRYPTION_KEY
